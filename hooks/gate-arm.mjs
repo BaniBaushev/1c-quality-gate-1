@@ -88,34 +88,51 @@ function main() {
   const pendingPath = join(stateDir, PENDING);
   const donePath = join(stateDir, DONE);
 
+  // Состояние разделено по сессиям. Один маркер на проект ломается при параллельной
+  // работе: сессия, правившая свои файлы, упирается в гейт, взведённый чужой сессией,
+  // и либо снимает чужой маркер, либо не может завершиться. Каждая сессия отвечает
+  // только за свои правки.
+  const sessionId = String(payload?.session_id || 'unknown-session');
+
   mkdirSync(stateDir, { recursive: true });
 
-  let state = { armedAt: new Date().toISOString(), files: {} };
+  let state = { version: 2, sessions: {} };
   if (existsSync(pendingPath)) {
     try {
       const prev = JSON.parse(readFileSync(pendingPath, 'utf8'));
-      if (prev && typeof prev === 'object' && prev.files) state = prev;
+      if (prev?.sessions) state = prev;
+      else if (prev?.files) state.sessions['legacy'] = { armedAt: prev.armedAt, files: prev.files };
     } catch {
       /* повреждённый маркер перезаписываем свежим */
     }
   }
 
+  const now = new Date().toISOString();
+  const session = state.sessions[sessionId] || { armedAt: now, files: {} };
   const rel = toProjectRelative(root, filePath);
-  const entry = state.files[rel] || { kind, edits: 0 };
+  const entry = session.files[rel] || { kind, edits: 0 };
   entry.kind = kind;
   entry.edits += 1;
-  entry.lastEdit = new Date().toISOString();
-  state.files[rel] = entry;
-  state.updatedAt = entry.lastEdit;
+  entry.lastEdit = now;
+  session.files[rel] = entry;
+  session.updatedAt = now;
+  state.sessions[sessionId] = session;
 
   writeFileSync(pendingPath, JSON.stringify(state, null, 2), 'utf8');
 
-  // Новая правка обесценивает прошлый прогон: снятый ранее гейт больше не действителен.
+  // Новая правка обесценивает прошлый прогон ЭТОЙ сессии; чужие отметки не трогаем.
   if (existsSync(donePath)) {
     try {
-      rmSync(donePath, { force: true });
+      const done = JSON.parse(readFileSync(donePath, 'utf8'));
+      if (done?.sessions) {
+        delete done.sessions[sessionId];
+        if (Object.keys(done.sessions).length) writeFileSync(donePath, JSON.stringify(done, null, 2), 'utf8');
+        else rmSync(donePath, { force: true });
+      } else {
+        rmSync(donePath, { force: true });
+      }
     } catch {
-      /* не критично */
+      rmSync(donePath, { force: true });
     }
   }
 

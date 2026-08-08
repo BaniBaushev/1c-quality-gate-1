@@ -42,8 +42,28 @@ function main() {
     return 2;
   }
 
-  const files = Object.entries(state.files || {});
-  if (files.length === 0) return 0;
+  // Блокируем ТОЛЬКО за правки этой сессии. Чужие остаются в состоянии нетронутыми:
+  // параллельная сессия отвечает за свой гейт сама, а перехватывать её работу нельзя.
+  const sessionId = String(payload?.session_id || 'unknown-session');
+  const sessions = state.sessions || (state.files ? { legacy: { files: state.files } } : {});
+  const mine = sessions[sessionId]?.files || {};
+  const files = Object.entries(mine);
+
+  const foreign = Object.entries(sessions)
+    .filter(([id]) => id !== sessionId)
+    .reduce((sum, [, s]) => sum + Object.keys(s.files || {}).length, 0);
+
+  if (files.length === 0) {
+    if (foreign > 0) {
+      // Не блокируем, но и не скрываем: пусть видно, что в проекте есть непроверенные
+      // правки другой сессии — их владелец разберётся с ними сам.
+      process.stderr.write(
+        `[гейт качества] В проекте есть непроверенные правки другой сессии (${foreign}). ` +
+          'Эта сессия их не касалась — завершение не блокируется.\n'
+      );
+    }
+    return 0;
+  }
 
   const bsl = files.filter(([, v]) => v.kind === 'bsl').map(([k]) => k);
   const xml = files.filter(([, v]) => v.kind === 'metadata-xml').map(([k]) => k);
@@ -76,13 +96,21 @@ function main() {
     'Причина сохраняется в состоянии: пропуск фиксируется, а не замалчивается.'
   );
 
+  lines.push('', `Сессия: ${sessionId}`);
+  if (foreign > 0) {
+    lines.push(
+      `В проекте есть также правки другой сессии (${foreign}) — их НЕ трогай:`,
+      'за них отвечает та сессия, снятие чужого гейта перехватывает чужую работу.'
+    );
+  }
+
   if (repeated) {
     // Повторная попытка завершения: гейт не пропускает по-прежнему, но если снятие
-    // штатным путём почему-то недоступно, показываем прямой путь к файлу состояния.
+    // штатным путём почему-то недоступно, показываем точную команду отказа.
     lines.push(
       '',
       'Это повторная попытка завершения — блокировка не снимается сама.',
-      `Крайний случай, если снять штатно не получается: удали файл ${pendingPath}`
+      `Крайний случай: node "<каталог плагина>/tools/gate.mjs" release --session ${sessionId} --class C0 --reason "<почему>"`
     );
   }
 

@@ -33,10 +33,29 @@ function readPending() {
   const { pending } = paths();
   if (!existsSync(pending)) return null;
   try {
-    return JSON.parse(readFileSync(pending, 'utf8'));
+    const raw = JSON.parse(readFileSync(pending, 'utf8'));
+    if (raw?.sessions) return raw;
+    // Состояние старого формата (один набор файлов на проект) — поднимаем до сессионного.
+    if (raw?.files) return { version: 2, sessions: { legacy: { armedAt: raw.armedAt, files: raw.files } } };
+    return { version: 2, sessions: {} };
   } catch {
-    return { corrupt: true, files: {} };
+    return { corrupt: true, sessions: {} };
   }
+}
+
+/**
+ * Выбирает сессию, с которой работаем.
+ *
+ * Явный --session надёжнее всего: его печатает сообщение блокировки. Без него берём
+ * единственную (обычный случай) либо самую свежую. Наугад по нескольким сессиям не
+ * работаем: снять чужой гейт значит объявить проверенной чужую работу.
+ */
+function pickSession(state, explicit) {
+  const ids = Object.keys(state.sessions || {});
+  if (explicit) return ids.includes(explicit) ? explicit : null;
+  if (ids.length === 0) return null;
+  if (ids.length === 1) return ids[0];
+  return ids.sort((a, b) => String(state.sessions[b].updatedAt || '').localeCompare(String(state.sessions[a].updatedAt || '')))[0];
 }
 
 function parseArgs(args) {
@@ -69,21 +88,51 @@ function cmdStatus() {
     process.stdout.write('Гейт взведён, но маркер повреждён и не читается.\n');
     return 1;
   }
-  const files = Object.entries(state.files || {});
-  process.stdout.write(`Гейт взведён с ${state.armedAt}. Файлов: ${files.length}.\n\n`);
-  for (const [path, meta] of files) {
-    process.stdout.write(`  ${meta.kind.padEnd(13)} ${path}  (правок: ${meta.edits})\n`);
+
+  const ids = Object.keys(state.sessions || {});
+  if (ids.length === 0) {
+    process.stdout.write('Гейт не взведён: изменений в файлах 1С не зафиксировано.\n');
+    return 0;
   }
-  process.stdout.write('\nСнять: node gate.mjs release --evidence <файл отчёта>\n');
+
+  for (const id of ids) {
+    const s = state.sessions[id];
+    const files = Object.entries(s.files || {});
+    process.stdout.write(`Сессия ${id} — взведена ${s.armedAt}, файлов: ${files.length}\n`);
+    for (const [path, meta] of files) {
+      process.stdout.write(`  ${String(meta.kind).padEnd(13)} ${path}  (правок: ${meta.edits})\n`);
+    }
+    process.stdout.write('\n');
+  }
+
+  if (ids.length > 1) {
+    process.stdout.write(
+      'Сессий несколько: снимай гейт только своей — укажи --session <id>.\n' +
+        'Снятие чужого гейта объявляет проверенной чужую работу.\n'
+    );
+  }
+  process.stdout.write('Снять: node gate.mjs release --evidence <файл отчёта> [--session <id>]\n');
   return 0;
 }
 
 function cmdRelease(args) {
   const state = readPending();
-  if (!state) {
+  if (!state || Object.keys(state.sessions || {}).length === 0) {
     process.stdout.write('Гейт не взведён — снимать нечего.\n');
     return 0;
   }
+
+  const explicit = typeof args.session === 'string' ? args.session : null;
+  const sessionId = pickSession(state, explicit);
+  if (!sessionId) {
+    process.stderr.write(
+      explicit
+        ? `Сессия "${explicit}" в состоянии гейта не найдена. Доступны: ${Object.keys(state.sessions).join(', ')}\n`
+        : 'Не удалось определить сессию — укажи --session <id>.\n'
+    );
+    return 2;
+  }
+  const sessionState = state.sessions[sessionId];
 
   const { dir, pending, done } = paths();
   const evidenceFile = typeof args.evidence === 'string' ? args.evidence : null;
@@ -121,7 +170,7 @@ function cmdRelease(args) {
     }
     // Заявленный класс сверяется с реальным охватом: иначе сорок изменённых модулей
     // закрываются десятисимвольной причиной, и дешёвый путь превращается в лазейку.
-    const scope = Object.entries(state.files || {});
+    const scope = Object.entries(sessionState.files || {});
     if (scope.length > 2) {
       process.stderr.write(
         `Заявлен класс ${cls}, но в охвате ${scope.length} файлов — это не точечная правка.\n` +
@@ -145,23 +194,43 @@ function cmdRelease(args) {
   }
 
   mkdirSync(dir, { recursive: true });
-  const record = {
+
+  // Снимаем ТОЛЬКО свою сессию: записи остальных остаются взведёнными, за них отвечают
+  // их владельцы. Если своя была последней — файл состояния удаляется целиком.
+  delete state.sessions[sessionId];
+  if (Object.keys(state.sessions).length) {
+    writeFileSync(pending, JSON.stringify(state, null, 2), 'utf8');
+  } else {
+    rmSync(pending, { force: true });
+  }
+
+  let doneState = { version: 2, sessions: {} };
+  if (existsSync(done)) {
+    try {
+      const prev = JSON.parse(readFileSync(done, 'utf8'));
+      if (prev?.sessions) doneState = prev;
+    } catch {
+      /* повреждённый журнал снятий перезаписываем */
+    }
+  }
+  doneState.sessions[sessionId] = {
     releasedAt: new Date().toISOString(),
-    armedAt: state.armedAt,
-    files: state.files,
+    armedAt: sessionState.armedAt,
+    files: sessionState.files,
     mode: evidenceFile ? 'evidence' : 'declared',
     evidenceFile: evidenceFile || null,
     class: cls || null,
     reason: reason || null,
   };
-  writeFileSync(done, JSON.stringify(record, null, 2), 'utf8');
-  rmSync(pending, { force: true });
+  writeFileSync(done, JSON.stringify(doneState, null, 2), 'utf8');
 
-  const count = Object.keys(state.files || {}).length;
+  const count = Object.keys(sessionState.files || {}).length;
+  const rest = Object.keys(state.sessions).length;
   process.stdout.write(
-    evidenceFile
-      ? `Гейт снят по следу прогона (${evidenceFile}). Файлов в охвате: ${count}.\n`
-      : `Гейт снят как ${cls} без прогона. Причина: ${reason}\nФайлов в охвате: ${count}.\n`
+    (evidenceFile
+      ? `Гейт сессии ${sessionId} снят по следу прогона (${evidenceFile}). Файлов в охвате: ${count}.\n`
+      : `Гейт сессии ${sessionId} снят как ${cls} без прогона. Причина: ${reason}\nФайлов в охвате: ${count}.\n`) +
+      (rest ? `Остаются взведёнными гейты других сессий: ${rest}. Их не трогаем.\n` : '')
   );
   return 0;
 }
