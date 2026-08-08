@@ -1,0 +1,21 @@
+{
+  "name": "1c-quality-gate",
+  "description": "Контроль качества разработки 1С:Предприятие (BSL): стандарты #stdNNN, принципы структурного и объектно-ориентированного программирования, паттерны проектирования применительно к 1С, корректность XML-структур метаданных. Блокирующие гейты не дают объявить работу законченной, пока проверки не прогнаны, а машиночитаемый след фиксирует, что именно проверено и что пропущено.",
+  "version": "0.1.0",
+  "author": {
+    "name": "romandredan"
+  },
+  "homepage": "https://github.com/Romandredan/1c-quality-gate",
+  "repository": "https://github.com/Romandredan/1c-quality-gate",
+  "license": "MIT",
+  "keywords": [
+    "1c",
+    "bsl",
+    "code-review",
+    "quality-gate",
+    "standards",
+    "solid",
+    "design-patterns",
+    "metadata-xml"
+  ]
+}
