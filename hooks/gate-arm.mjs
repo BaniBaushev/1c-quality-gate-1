@@ -29,10 +29,20 @@ function classifyFile(filePath) {
   if (lower.endsWith('.bsl') || lower.endsWith('.os')) return 'bsl';
 
   if (lower.endsWith('.xml')) {
-    // XML метаданных 1С лежит в дереве исходников конфигурации или расширения.
-    if (/(^|\/)(src|cf|cfe)\//.test(lower)) return 'metadata-xml';
-    // Configuration.xml — корень выгрузки, может лежать и вне src/.
+    // Configuration.xml — корень выгрузки конфигурации, однозначный маркер 1С.
     if (/(^|\/)configuration\.xml$/.test(lower)) return 'metadata-xml';
+
+    // Каталоги выгрузки: cf (конфигурация) и cfe (расширения), в корне либо внутри src.
+    // Одного «src/» НЕДОСТАТОЧНО — это стандартный каталог исходников в Java, .NET,
+    // Android и почти везде; плагин обязан молчать в чужих проектах, а не взводить
+    // гейт на каждый их XML.
+    if (/(^|\/)(cf|cfe)\//.test(lower)) return 'metadata-xml';
+
+    // Выгрузка EDT/конфигуратора внутри src: src/<Имя>/... с типовыми каталогами объектов.
+    if (/(^|\/)src\/.*\/(catalogs|documents|informationregisters|accumulationregisters|commonmodules|dataprocessors|reports|enums|chartsofcharacteristictypes|businessprocesses|tasks|exchangeplans|roles|subsystems)\//.test(lower)) {
+      return 'metadata-xml';
+    }
+
     return null;
   }
 

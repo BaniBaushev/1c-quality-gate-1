@@ -119,6 +119,24 @@ function cmdRelease(args) {
       process.stderr.write('Причина слишком короткая: напиши, почему проверка не требуется.\n');
       return 2;
     }
+    // Заявленный класс сверяется с реальным охватом: иначе сорок изменённых модулей
+    // закрываются десятисимвольной причиной, и дешёвый путь превращается в лазейку.
+    const scope = Object.entries(state.files || {});
+    if (scope.length > 2) {
+      process.stderr.write(
+        `Заявлен класс ${cls}, но в охвате ${scope.length} файлов — это не точечная правка.\n` +
+          'Нужен полноценный прогон: --evidence <файл>.\n'
+      );
+      return 2;
+    }
+    const heavilyEdited = scope.filter(([, meta]) => (meta.edits || 0) > 5);
+    if (heavilyEdited.length) {
+      process.stderr.write(
+        `Заявлен класс ${cls}, но файл правился многократно (${heavilyEdited[0][1].edits} раз): ` +
+          `${heavilyEdited[0][0]}\nЭто непохоже на косметику — нужен прогон: --evidence <файл>.\n`
+      );
+      return 2;
+    }
   } else {
     process.stderr.write(
       'Нужен либо --evidence <файл>, либо пара --class C0|C1 --reason "<почему проверка не требуется>".\n'

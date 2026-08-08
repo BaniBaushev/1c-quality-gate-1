@@ -72,23 +72,47 @@ function parseFields(body) {
   return fields;
 }
 
-/** Вытаскивает строки вида `[qg <тип>: ...]` из секции evidence. */
+/**
+ * Вытаскивает записи вида `[qg <тип>: ...]` из секции evidence.
+ *
+ * Запись может занимать несколько строк: длинный `scope` естественно переносится, и
+ * отвергать его за перенос значило бы наказывать за форматирование. Незакрытая запись
+ * склеивается со следующими строками до закрывающей скобки.
+ */
 export function extractRecords(text) {
   const lines = text.split(/\r?\n/);
   const start = lines.findIndex((l) => l.trim().toLowerCase() === SECTION);
+  const offset = start === -1 ? 0 : start + 1;
   const scan = start === -1 ? lines : lines.slice(start + 1);
 
   const records = [];
-  scan.forEach((line, idx) => {
-    const m = line.match(/^\s*\[qg\s+([a-z_]+)\s*:\s*(.*?)\]\s*$/);
-    if (!m) return;
-    records.push({
-      type: m[1],
-      fields: parseFields(m[2]),
-      line: (start === -1 ? 0 : start + 1) + idx + 1,
-      raw: line.trim(),
-    });
-  });
+  for (let i = 0; i < scan.length; i++) {
+    if (!/^\s*\[qg\s/.test(scan[i])) continue;
+
+    let buffer = scan[i].trim();
+    let consumed = 0;
+    // Собираем продолжение, пока запись не закрыта. Пустая строка и начало новой записи
+    // прерывают сбор: незакрытая запись должна упасть как дефект, а не съесть соседей.
+    while (!buffer.endsWith(']') && i + consumed + 1 < scan.length) {
+      const next = scan[i + consumed + 1];
+      if (!next.trim() || /^\s*\[qg\s/.test(next)) break;
+      buffer += ' ' + next.trim();
+      consumed++;
+    }
+
+    const m = buffer.match(/^\[qg\s+([a-z_]+)\s*:\s*(.*)\]$/);
+    if (m) {
+      records.push({
+        type: m[1],
+        fields: parseFields(m[2]),
+        line: offset + i + 1,
+        raw: buffer,
+      });
+    } else {
+      records.push({ type: '__malformed__', fields: {}, line: offset + i + 1, raw: buffer });
+    }
+    i += consumed;
+  }
   return records;
 }
 
@@ -105,6 +129,10 @@ export function validate(text, { gate = false } = {}) {
   const records = extractRecords(text);
 
   for (const rec of records) {
+    if (rec.type === '__malformed__') {
+      add('error', rec.line, `запись не разобрана (не закрыта скобка или сломан формат): ${rec.raw.slice(0, 80)}`);
+      continue;
+    }
     const required = REQUIRED[rec.type];
     if (!required) {
       add('error', rec.line, `неизвестный тип записи "${rec.type}" (ожидались: ${Object.keys(REQUIRED).join(', ')})`);
