@@ -269,9 +269,11 @@ export function runBslLs({ jar, root, configPath }) {
   const text = existsSync(report) ? readFileSync(report, 'utf8') : '';
   try {
     rmSync(out, { recursive: true, force: true });
-    rmSync(stage, { recursive: false, force: true });
+    // Промежуточный каталог убираем ТОЛЬКО пустым: параллельный прогон может держать в нём
+    // свой отчёт, и рекурсивное удаление снесло бы чужой результат.
+    if (readdirSync(stage).length === 0) rmSync(stage, { recursive: true, force: true });
   } catch {
-    /* уборка не критична: каталог пустой и безобиден */
+    /* уборка не критична */
   }
   return { ok: !r.error && Boolean(text), stdout: text, stderr: r.stderr || '', args };
 }
