@@ -143,6 +143,31 @@ section('Сверка «диск ↔ состав»');
   check('отсутствующий файл даёт код 2', r.code === 2);
 }
 
+// Валидатор роли проверяет Rights.xml, а путь ему дают тремя разными способами. Раньше файл
+// метаданных роли разбирался как Rights.xml и давал ЛОЖНУЮ ошибку при меньшем числе проверок:
+// не отказ, а находка, которой нет в чужом коде. Три формы обязаны давать один результат.
+{
+  const roleDir = join(FIXTURES, 'role-min', 'Roles', 'QG_ТестоваяРоль');
+  const forms = [`${roleDir}.xml`, roleDir, join(roleDir, 'Ext', 'Rights.xml')];
+  const outs = [];
+  let pythonMissing = false;
+  for (const p of forms) {
+    try {
+      outs.push(execFileSync('python', [join(ROOT, 'tools/xml/role-validate.py'), '-Path', p], { encoding: 'utf8', stdio: 'pipe' }));
+    } catch (e) {
+      if (/ENOENT/.test(String(e.code || e.message))) pythonMissing = true;
+      outs.push(`${e.stdout || ''}${e.stderr || ''}`);
+    }
+  }
+  if (pythonMissing) {
+    process.stdout.write('  (пропуск: python недоступен)\n');
+  } else {
+    const counts = outs.map((o) => (o.match(/\((\d+) checks\)/) || [])[1]);
+    check('все три формы пути к роли дают один результат', new Set(counts).size === 1 && counts[0], counts.join(' / '));
+    check('роль признана валидной', outs.every((o) => o.includes('Validation OK')), outs[0].trim().slice(0, 100));
+  }
+}
+
 // ---------------------------------------------------------------------------
 section('Валидатор следа — отвергает недобросовестный прогон');
 
@@ -298,6 +323,7 @@ const mustContain = [
   ['skills/xml-structure-review/SKILL.md', 'ChildObjects', 'проверка регистрации в составе'],
   ['shared/routing-contract.md', 'радиус', 'граница контуров по радиусу правки'],
   ['skills/bsl-code-review/SKILL.md', 'артефакт области анализа', 'ложные UnresolvedMethodCall при анализе CFE без основной конфигурации'],
+  ['skills/xml-structure-review/SKILL.md', '-Path', 'универсальное имя параметра валидаторов XML'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
@@ -416,6 +442,21 @@ section('Часовой проверяется по целям, а не «хот
   const dead = writeBytes('ev-dead.md', head + v8 + '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=not_found]\n' + clean + notVerified);
   const r3 = run('tools/evidence-validator.mjs', [dead, '--gate']);
   check('часовой по анализатору не подтверждён — след отвергнут', r3.code === 2);
+
+  // Идентификатор нашей эвристики бывает составным: qg:AI-CONTRACT-RECHECK, не только qg:ARCH-A1.
+  const compound = writeBytes(
+    'ev-compound.md',
+    head + v8 + '[qg applied: layer=code, scope=t, ids=[qg:AI-CONTRACT-RECHECK], verdict=clean]\n' + notVerified
+  );
+  const rc = run('tools/evidence-validator.mjs', [compound]);
+  check('составной идентификатор эвристики принимается', !rc.out.includes('непохож'), rc.out.trim().slice(0, 120));
+
+  const bogus = writeBytes(
+    'ev-bogus.md',
+    head + v8 + '[qg applied: layer=code, scope=t, ids=[qg:X], verdict=clean]\n' + notVerified
+  );
+  const rb = run('tools/evidence-validator.mjs', [bogus]);
+  check('односегментный идентификатор по-прежнему отвергается', rb.out.includes('непохож'));
 
   // Нарушения не требуют часового: «нашли» самодостаточно, недостоверно только «не нашли».
   const onlyViolations = writeBytes('ev-viol.md', head + v8 + '[qg applied: layer=code, scope=static-analysis, ids=[bslls:MagicNumber], verdict=violation:bslls:MagicNumber]\n');

@@ -7,3 +7,6 @@ tests/fixtures/** -text
 
 # Фикстура часового: байты значимы (BOM), нормализация EOL недопустима
 assets/analyzer/sentinel-fixture/** -text
+
+# Фикстура роли: BOM значим
+tests/fixtures/role-min/** -text

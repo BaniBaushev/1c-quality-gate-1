@@ -194,6 +194,16 @@ def main():
     # A: Directory → Ext/Rights.xml
     if os.path.isdir(rights_path):
         rights_path = os.path.join(rights_path, 'Ext', 'Rights.xml')
+    # A2: Role metadata file (Roles/Name.xml) → Roles/Name/Ext/Rights.xml
+    #
+    # Without this the validator happily parses the metadata file as if it were Rights.xml
+    # and reports a false error with fewer checks (6 instead of 8). A misleading result is
+    # worse than a hard failure: it looks like a finding in the user's code.
+    elif os.path.isfile(rights_path) and os.path.basename(rights_path) != 'Rights.xml':
+        stem = os.path.splitext(rights_path)[0]
+        candidate = os.path.join(stem, 'Ext', 'Rights.xml')
+        if os.path.exists(candidate):
+            rights_path = candidate
     # B1: Missing Ext/
     if not os.path.exists(rights_path):
         fn = os.path.basename(rights_path)
