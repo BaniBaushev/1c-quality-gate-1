@@ -422,6 +422,46 @@ section('Статический анализатор — нормализаци�
 }
 
 // ---------------------------------------------------------------------------
+section('Установка анализатора — манифест и состояние установки');
+
+{
+  const boot = await import(pathToFileURL(join(ROOT, 'tools', 'analyzer-bootstrap.mjs')).href);
+  const manifest = boot.readManifest();
+
+  check('манифест закрепляет версию', /^\d+\.\d+\.\d+$/.test(manifest.version || ''), manifest.version);
+  check('манифест называет источник', manifest.repo === 'itrous/bsl-analyzer' && manifest.urlTemplate.includes('{version}'));
+  const targets = Object.entries(manifest.targets || {});
+  check('поддержаны основные платформы', targets.length >= 3, targets.map(([k]) => k).join(', '));
+  const badSums = targets.filter(([, t]) => !/^[0-9a-f]{64}$/.test(t.sha256 || '') || !(t.size > 0));
+  check('у каждой платформы валидная сумма и размер', badSums.length === 0, badSums.map(([k]) => k).join(', '));
+
+  const url = boot.assetUrl(manifest, manifest.targets[targets[0][0]]);
+  check('ссылка собирается из шаблона', url.startsWith('https://github.com/itrous/bsl-analyzer/releases/download/v') && url.endsWith(targets[0][1].asset), url);
+
+  // Состояние установки проверяется без сети: подкладываем свой «бинарник» и синтетический
+  // манифест под него. Маркер готовности обязан отражать РЕАЛЬНЫЙ файл, иначе испорченная
+  // загрузка выглядела бы рабочей установкой.
+  const fakeRoot = join(WORK, 'plugin-data');
+  const fake = { engine: 'test-engine', version: '9.9.9', repo: 'x/y', urlTemplate: 'https://example/{asset}', targets: {} };
+  const dir = boot.installDir(fake, fakeRoot);
+  mkdirSync(dir, { recursive: true });
+  const binPath = boot.binaryPath(fake, fakeRoot);
+  writeFileSync(binPath, 'не настоящий бинарник', 'utf8');
+  const realSha = await boot.sha256(binPath);
+  const realSize = readFileSync(binPath).length;
+  fake.targets[boot.targetKey()] = { asset: 'fake', sha256: realSha, size: realSize };
+  writeFileSync(join(dir, '.ready'), JSON.stringify({ version: fake.version, sha256: realSha, size: realSize }), 'utf8');
+
+  check('корректная установка распознаётся', boot.installed(fake, fakeRoot) === binPath);
+
+  writeFileSync(binPath, 'не настоящий бинарник, но длиннее', 'utf8');
+  check('изменённый размер обесценивает установку', boot.installed(fake, fakeRoot) === null);
+
+  const v = await boot.verifyInstalled(fake, fakeRoot);
+  check('проверка отличает испорченное от неустановленного', v.reason === 'corrupted_or_stale', v.reason);
+}
+
+// ---------------------------------------------------------------------------
 section('Часовой проверяется по целям, а не «хотя бы один живой»');
 
 {

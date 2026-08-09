@@ -1,0 +1,24 @@
+{
+  "_comment": "Закреплённая версия анализатора и контрольные суммы его бинарников. Плагин скачивает файл с релизов автора (не зеркалит) и проверяет SHA-256 до того, как запустить. Обновление версии: поменять version и суммы, взяв их из GitHub API релиза (поле digest у каждого asset).",
+  "engine": "bsl-analyzer",
+  "version": "0.2.66",
+  "repo": "itrous/bsl-analyzer",
+  "urlTemplate": "https://github.com/{repo}/releases/download/v{version}/{asset}",
+  "targets": {
+    "win32-x64": {
+      "asset": "bsl-analyzer-app-windows-amd64.exe",
+      "sha256": "64649918a982bfe4f7aa2519f351cce563ca30d51ba1f2e86a94950440e47196",
+      "size": 61820928
+    },
+    "linux-x64": {
+      "asset": "bsl-analyzer-app-linux-amd64",
+      "sha256": "049aa357452b2c75d78e9a0e9309b3d9bede3825e195e2fe79acf5ee50e54153",
+      "size": 68637192
+    },
+    "darwin-arm64": {
+      "asset": "bsl-analyzer-app-darwin-arm64",
+      "sha256": "db4c308051c4e83c94487137b7b7d7e9b5be41400adf9d6ec9eca71ebf1aafd2",
+      "size": 53264256
+    }
+  }
+}

@@ -26,6 +26,7 @@ import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { readManifest, installed as bootstrapInstalled, install as installAnalyzer } from './analyzer-bootstrap.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PLUGIN_ROOT = dirname(HERE);
@@ -42,6 +43,7 @@ export const DEFAULT_ANALYZER = {
   jar: null,
   version: null,
   required: false,
+  autoInstall: true,
   config: null,
 };
 
@@ -83,6 +85,7 @@ export function readAnalyzerConfig(root = projectRoot()) {
   if (env.QG_ANALYZER_JAR) cfg.jar = env.QG_ANALYZER_JAR;
   if (env.QG_ANALYZER_VERSION) cfg.version = env.QG_ANALYZER_VERSION;
   if (env.QG_ANALYZER_REQUIRED) cfg.required = env.QG_ANALYZER_REQUIRED === 'true';
+  if (env.QG_ANALYZER_AUTOINSTALL) cfg.autoInstall = env.QG_ANALYZER_AUTOINSTALL !== 'false';
   return cfg;
 }
 
@@ -132,6 +135,17 @@ export function groupByConfigRoot(files, stopAt = projectRoot()) {
  */
 export function resolveBslAnalyzer(cfg) {
   if (cfg.binary) return existsSync(cfg.binary) ? cfg.binary : null;
+
+  // Первым делом — своя установка в каталоге данных плагина: её версия закреплена манифестом
+  // и сверена по SHA-256. Установку лаунчера берём следом, чтобы не заставлять скачивать
+  // шестьдесят мегабайт того, что у пользователя уже есть.
+  try {
+    const own = bootstrapInstalled(readManifest());
+    if (own) return own;
+  } catch {
+    /* манифеста нет или он повреждён — работаем как раньше */
+  }
+
   const dir = join(homedir(), '.bsl-analyzer', 'bin');
   if (!existsSync(dir)) return null;
   const app = join(dir, IS_WINDOWS ? 'bsl-analyzer-app.exe' : 'bsl-analyzer-app');
@@ -142,6 +156,33 @@ export function resolveBslAnalyzer(cfg) {
     .sort()
     .pop();
   return versioned ? join(dir, versioned) : null;
+}
+
+/**
+ * Находит анализатор, при необходимости устанавливая его.
+ *
+ * Автоустановка включена по умолчанию: плагин публичный, и шаг «скачайте бинарник сами»
+ * отсекает тех, кто мог бы им пользоваться. Отключается `analyzer.autoInstall: false` —
+ * тогда отсутствие анализатора честно уходит в `skipped`, как и раньше.
+ */
+export async function ensureBslAnalyzer(cfg, log = () => {}) {
+  const found = resolveBslAnalyzer(cfg);
+  if (found) return { path: found, installed: false };
+  if (!cfg.autoInstall) return { path: null, installed: false, reason: 'autoinstall_disabled' };
+
+  let manifest;
+  try {
+    manifest = readManifest();
+  } catch {
+    return { path: null, installed: false, reason: 'manifest_missing' };
+  }
+  // Закреплённая пользователем версия, отличная от манифестной, проверяться нечем: сумм для
+  // неё у нас нет. Молча скачать другую версию значит подменить то, что он закрепил.
+  if (cfg.version && cfg.version !== manifest.version) {
+    return { path: null, installed: false, reason: 'version_pin_without_checksum' };
+  }
+  const r = await installAnalyzer(manifest, { log });
+  return r.ok ? { path: r.path, installed: r.downloaded } : { path: null, installed: false, reason: r.reason };
 }
 
 export function engineVersion(binary) {
@@ -397,7 +438,7 @@ function report(findings, out, { all = false } = {}) {
   }
 }
 
-function main(argv) {
+async function main(argv) {
   const args = parseArgs(argv.slice(2));
   const out = (s) => process.stdout.write(s + '\n');
   const root = projectRoot();
@@ -411,8 +452,17 @@ function main(argv) {
     jar = cfg.jar;
     if (!jar || !existsSync(jar)) return unavailable('analyzer_unavailable');
   } else {
-    binary = resolveBslAnalyzer(cfg);
-    if (!binary) return unavailable('analyzer_unavailable');
+    const found = await ensureBslAnalyzer(cfg, (s) => process.stderr.write(s + '\n'));
+    binary = found.path;
+    if (!binary) {
+      return unavailable(
+        found.reason === 'unsupported_platform'
+          ? 'analyzer_unsupported_platform'
+          : found.reason === 'version_pin_without_checksum'
+            ? 'analyzer_version_pin_unverifiable'
+            : 'analyzer_unavailable'
+      );
+    }
   }
 
   const version = engine === 'bsl-ls' ? null : engineVersion(binary);
@@ -491,5 +541,5 @@ function main(argv) {
 }
 
 if (process.argv[1]?.endsWith('analyzer-run.mjs')) {
-  process.exit(main(process.argv));
+  main(process.argv).then((code) => process.exit(code));
 }
