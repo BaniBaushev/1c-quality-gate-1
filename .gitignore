@@ -11,3 +11,6 @@ Thumbs.db
 # Node (плагин зависимостей не имеет, но защищаемся от случайного npm i)
 node_modules/
 package-lock.json
+
+# Рабочее пространство редактора — локальная вещь
+*.code-workspace
