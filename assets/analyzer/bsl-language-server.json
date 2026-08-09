@@ -9,7 +9,8 @@
       "IncorrectLineBreak": false,
       "SemicolonPresence": false,
       "YoLetterUsage": false,
-      "Typo": false
+      "Typo": false,
+      "LatinAndCyrillicSymbolInWord": false
     }
   }
 }
