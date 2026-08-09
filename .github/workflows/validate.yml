@@ -31,13 +31,5 @@ jobs:
           git diff --exit-code skills/bsl-architecture-review/references/signs-map.md \
             || { echo "signs-map.md устарел — перегенерируй: node tools/gen-signs-map-md.mjs"; exit 1; }
 
-      - name: Самопроверка инструментов
-        run: |
-          set -e
-          # Гигиена: находит дефекты в заведомо грязном файле и молчит на чистом.
-          printf '// \xd0\xa2\xd0\xb8\xd1\x80\xd0\xb5 \xe2\x80\x94 \xd0\xb2 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbc\xd0\xb5\xd0\xbd\xd1\x82\xd0\xb0\xd1\x80\xd0\xb8\xd0\xb8\n' > /tmp/dirty.bsl
-          node tools/hygiene-check.mjs /tmp/dirty.bsl && { echo "hygiene-check не заметил дефект"; exit 1; } || true
-          # Валидатор следа: отвергает прогон без записи sentinel.
-          printf '## quality evidence\n\n[qg applied: layer=code, scope=x, ids=[std454], verdict=clean]\n' > /tmp/ev.md
-          node tools/evidence-validator.mjs /tmp/ev.md --gate && { echo "валидатор следа пропустил прогон без sentinel"; exit 1; } || true
-          echo "самопроверка пройдена"
+      - name: Тесты программных проверок
+        run: node tests/run-tests.mjs
