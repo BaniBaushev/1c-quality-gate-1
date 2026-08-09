@@ -20,6 +20,9 @@
       ],
       "std": [
         "std440"
+      ],
+      "requires": [
+        "call-graph"
       ]
     },
     {
@@ -140,7 +143,10 @@
           "url": "https://v8std.ru/patterns/engineering/dry/"
         }
       ],
-      "std": []
+      "std": [],
+      "requires": [
+        "call-graph"
+      ]
     },
     {
       "id": "ARCH-A8",
@@ -180,7 +186,10 @@
           "url": "https://v8std.ru/patterns/engineering/yagni/"
         }
       ],
-      "std": []
+      "std": [],
+      "requires": [
+        "call-graph"
+      ]
     },
     {
       "id": "ARCH-A10",
