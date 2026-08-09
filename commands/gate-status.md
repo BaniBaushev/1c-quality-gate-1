@@ -7,7 +7,7 @@ description: Показать состояние гейта качества 1С
 Выполни:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/tools/gate.mjs" status
+node "$QG/tools/gate.mjs" status
 ```
 
 Затем кратко перескажи результат: взведён ли гейт, сколько файлов в охвате, какого они рода

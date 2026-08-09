@@ -125,7 +125,7 @@ MCP-режим доступен начиная с версии 1.0.0. Нужна
 Если правка действительно не требует проверки:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/tools/gate.mjs" release --class C0 --reason "правка комментария"
+node "$QG/tools/gate.mjs" release --class C0 --reason "правка комментария"
 ```
 
 Причина сохраняется в `.claude/.state/qg-done.json`. Для классов C2 и C3 такое снятие
