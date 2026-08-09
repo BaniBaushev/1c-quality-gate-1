@@ -114,6 +114,12 @@ function main() {
   entry.kind = kind;
   entry.edits += 1;
   entry.lastEdit = now;
+
+  // Правка обесценивает все доказательства по этому файлу. Гейт — требование к ТЕКУЩЕМУ
+  // состоянию артефакта, а не отметка «инструмент когда-то запускался»: проверки, сделанные
+  // до правки, относятся к другому содержимому и переиспользованы быть не могут.
+  delete entry.verified;
+
   session.files[rel] = entry;
   session.updatedAt = now;
   state.sessions[sessionId] = session;
@@ -136,7 +142,19 @@ function main() {
     }
   }
 
-  process.stdout.write(HINTS[kind].join('\n').replace('%FILE%', rel) + '\n');
+  // Вывод обязан быть JSON с hookSpecificOutput: простой текст из PostToolUse до модели
+  // НЕ доходит — маркер при этом пишется, и получается гейт, о котором модель узнаёт только
+  // при попытке завершить работу. Проверено на живой сессии.
+  const hint = HINTS[kind].join('\n').replace('%FILE%', rel);
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: hint,
+      },
+      systemMessage: `Гейт качества 1С взведён: ${rel}`,
+    }) + '\n'
+  );
 }
 
 try {

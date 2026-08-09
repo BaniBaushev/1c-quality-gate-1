@@ -230,6 +230,59 @@ section('Механика гейта');
 }
 
 // ---------------------------------------------------------------------------
+section('Переиспользование доказательств и формат вывода хука');
+
+{
+  const proj = join(WORK, 'verify-proj');
+  rmSync(proj, { recursive: true, force: true });
+  mkdirSync(join(proj, 'src', 'cf', 'CommonModules', 'V', 'Ext'), { recursive: true });
+  const env = { CLAUDE_PROJECT_DIR: proj };
+  const rel = 'src/cf/CommonModules/V/Ext/Module.bsl';
+  const file = join(proj, ...rel.split('/'));
+
+  const arm = () => {
+    try {
+      return execFileSync(process.execPath, [join(ROOT, 'hooks', 'gate-arm.mjs')], {
+        input: JSON.stringify({ session_id: 'V1', cwd: proj, tool_input: { file_path: file } }),
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
+      });
+    } catch {
+      return '';
+    }
+  };
+  const readState = () => {
+    const p = join(proj, '.claude', '.state', 'qg-pending.json');
+    if (!existsSync(p)) return null;
+    const j = JSON.parse(readFileSync(p, 'utf8'));
+    return Object.values(j.sessions?.V1?.files || {})[0] || null;
+  };
+
+  // Простой текст из PostToolUse до модели не доходит — нужен JSON с hookSpecificOutput.
+  const out = arm();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(out);
+  } catch {
+    /* останется null */
+  }
+  check('хук взвода отдаёт валидный JSON', parsed !== null, out.slice(0, 60));
+  check('в JSON есть additionalContext', Boolean(parsed?.hookSpecificOutput?.additionalContext));
+  check('hookEventName корректен', parsed?.hookSpecificOutput?.hookEventName === 'PostToolUse');
+
+  const v = run('tools/gate.mjs', ['verify', '--layer', 'code', rel, '--session', 'V1'], { env });
+  check('verify отмечает файл проверенным', v.code === 0, v.out.trim().slice(0, 80));
+  check('отметка записана в состояние', Boolean(readState()?.verified?.code));
+
+  arm();
+  check('правка снимает отметку (инвалидация)', !readState()?.verified, JSON.stringify(readState()?.verified));
+  check('счётчик правок растёт', readState()?.edits === 2);
+
+  const vBad = run('tools/gate.mjs', ['verify', '--layer', 'code', 'нет-такого-файла.bsl', '--session', 'V1'], { env });
+  check('verify по чужому файлу не отмечает', vBad.code === 1);
+}
+
+// ---------------------------------------------------------------------------
 section('Полнота правил (контуры code и arch выполняет модель — проверяем, что правила на месте)');
 
 const mustContain = [
@@ -237,6 +290,10 @@ const mustContain = [
   ['skills/bsl-code-review/references/ai-antipatterns.md', 'AI-01', 'запись набора с неполным отбором'],
   ['skills/bsl-code-review/references/ai-antipatterns.md', 'AI-04', 'отчёт о непрогнанной проверке'],
   ['skills/bsl-code-review/references/ai-antipatterns.md', 'AI-05', 'зелёная сборка вместо компиляции'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'Коррелированный подзапрос', 'коррелированный подзапрос в условии'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'ИНДЕКСИРОВАТЬ ПО', 'временная таблица без индекса'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'СообщитьПользователю', 'Сообщить() как уведомление'],
+  ['skills/quality-gate/references/adversarial-audit.md', 'опроверг', 'состязательный аудит: обратная постановка'],
   ['skills/bsl-architecture-review/references/ai-antipatterns-arch.md', 'ARCH-AI-05', 'параллельная коллекция вместо поля'],
   ['skills/xml-structure-review/SKILL.md', 'ChildObjects', 'проверка регистрации в составе'],
   ['shared/routing-contract.md', 'радиус', 'граница контуров по радиусу правки'],

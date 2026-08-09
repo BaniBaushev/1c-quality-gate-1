@@ -235,6 +235,57 @@ function cmdRelease(args) {
   return 0;
 }
 
+/**
+ * Отмечает файлы проверенными на их текущем содержимом.
+ *
+ * Гейт — требование к СОСТОЯНИЮ артефакта, а не просьба ещё раз позвать тот же инструмент.
+ * Если слой уже отработал по этому содержимому, повторный прогон — трата времени. Отметку
+ * снимает хук взвода при любой правке файла, поэтому устаревшее доказательство
+ * переиспользовано быть не может.
+ */
+function cmdVerify(args) {
+  const state = readPending();
+  if (!state || state.corrupt) {
+    process.stdout.write('Гейт не взведён — отмечать нечего.\n');
+    return 0;
+  }
+
+  const layer = typeof args.layer === 'string' ? args.layer : null;
+  const files = args._ || [];
+  if (!layer || files.length === 0) {
+    process.stderr.write('Использование: node gate.mjs verify --layer <code|arch|xml|hygiene> <файл> [...]\n');
+    return 2;
+  }
+
+  const sessionId = pickSession(state, typeof args.session === 'string' ? args.session : null);
+  if (!sessionId) {
+    process.stderr.write('Не удалось определить сессию — укажи --session <id> из сообщения о блокировке.\n');
+    return 2;
+  }
+
+  const session = state.sessions[sessionId];
+  const now = new Date().toISOString();
+  let marked = 0;
+
+  for (const rel of Object.keys(session.files || {})) {
+    if (!files.some((f) => rel.endsWith(String(f).replace(/\\/g, '/')))) continue;
+    const entry = session.files[rel];
+    entry.verified = entry.verified || {};
+    entry.verified[layer] = now;
+    marked++;
+  }
+
+  if (marked === 0) {
+    process.stdout.write('Ни один из указанных файлов не найден в охвате гейта этой сессии.\n');
+    return 1;
+  }
+
+  writeFileSync(paths().pending, JSON.stringify(state, null, 2), 'utf8');
+  process.stdout.write(`Отмечено проверенным на слое ${layer}: ${marked} файл(ов).\n`);
+  process.stdout.write('Отметка снимается автоматически при следующей правке файла.\n');
+  return 0;
+}
+
 function main(argv) {
   const [cmd, ...rest] = argv.slice(2);
   const args = parseArgs(rest);
@@ -242,12 +293,15 @@ function main(argv) {
   switch (cmd) {
     case 'status':
       return cmdStatus();
+    case 'verify':
+      return cmdVerify(args);
     case 'release':
       return cmdRelease(args);
     default:
       process.stderr.write(
         'Использование:\n' +
           '  node gate.mjs status\n' +
+          '  node gate.mjs verify --layer <code|arch|xml|hygiene> <файл> [...]\n' +
           '  node gate.mjs release --evidence <файл>\n' +
           '  node gate.mjs release --class C0 --reason "<почему>"\n'
       );

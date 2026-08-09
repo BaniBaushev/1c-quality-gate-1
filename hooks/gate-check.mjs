@@ -10,11 +10,24 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readPayload, projectRoot } from './_shared.mjs';
 
 const STATE_DIR = ['.claude', '.state'];
 const PENDING = 'qg-pending.json';
+
+/**
+ * Готовый путь к инструменту плагина для подстановки в сообщение.
+ *
+ * Печатается развёрнутым, а не плейсхолдером: тот, кто читает сообщение о блокировке, должен
+ * иметь возможность выполнить команду немедленно. Плейсхолдер вида «каталог плагина»
+ * заставляет сначала выяснять, где этот каталог, — и ровно в этот момент теряется выход
+ * из блокировки.
+ */
+function toolPath(name) {
+  return join(dirname(dirname(fileURLToPath(import.meta.url))), 'tools', name).replace(/\\/g, '/');
+}
 
 function main() {
   const payload = readPayload();
@@ -92,7 +105,7 @@ function main() {
     'Косметическая правка закрывается за секунды: класс C0 требует лишь гигиены файлов.',
     '',
     'Если правка действительно не требует проверки — сними гейт явно, с указанием причины:',
-    '  node "<каталог плагина>/tools/gate.mjs" release --class C0 --reason "<почему>"',
+    `  node "${toolPath('gate.mjs')}" release --class C0 --reason "<почему>"`,
     'Причина сохраняется в состоянии: пропуск фиксируется, а не замалчивается.'
   );
 
