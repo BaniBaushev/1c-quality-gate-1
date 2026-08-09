@@ -20,7 +20,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 
@@ -310,6 +310,116 @@ for (const [file, needle, label] of mustContain) {
   check('у каждого признака есть контр-сигнал', without.length === 0, without.map((s) => s.id).join(', '));
   const noPrinciple = (map.signs || []).filter((s) => !s.principles?.length);
   check('у каждого признака есть ссылка на принцип', noPrinciple.length === 0);
+}
+
+// ---------------------------------------------------------------------------
+section('Статический анализатор — нормализация вывода и поиск корня конфигурации');
+
+{
+  const analyzer = await import(pathToFileURL(join(ROOT, 'tools', 'analyzer-run.mjs')).href);
+
+  // Синтетическое дерево: корень конфигурации определяется наличием Configuration.xml.
+  const proj = join(WORK, 'proj');
+  const cfRoot = join(proj, 'src', 'cf');
+  const modDir = join(cfRoot, 'CommonModules', 'Тест', 'Ext');
+  mkdirSync(modDir, { recursive: true });
+  writeFileSync(join(cfRoot, 'Configuration.xml'), '<xml/>', 'utf8');
+  const modFile = join(modDir, 'Module.bsl');
+  writeFileSync(modFile, 'Процедура П() КонецПроцедуры', 'utf8');
+  const outside = join(proj, 'scripts', 'tool.bsl');
+  mkdirSync(dirname(outside), { recursive: true });
+  writeFileSync(outside, '// вне конфигурации', 'utf8');
+
+  check('корень конфигурации найден по Configuration.xml', analyzer.findConfigRoot(modFile, proj) === cfRoot);
+  const grouped = analyzer.groupByConfigRoot([modFile, outside], proj);
+  check('файлы сгруппированы по корню', grouped.groups.get(cfRoot)?.length === 1);
+  check('файл вне конфигурации попал в сироты', grouped.orphans.length === 1);
+
+  // Пути в отчётах: bsl-analyzer отдаёт `\\?\`-форму, BSL LS — file:// URI. Разбор обеих
+  // обязателен: иначе фильтр по изменённым файлам не находит совпадений и контур
+  // отчитывается «чисто» на пустом множестве. Это ровно тот отказ, что был найден живьём.
+  const jsonl = [
+    JSON.stringify({ type: 'start', total_files: 1, version: '0.0.0' }),
+    JSON.stringify({
+      type: 'file',
+      path: '\\\\?\\' + modFile,
+      diagnostics: [
+        { code: 'CommonModuleInvalidType', message: 'тест', severity: 'Major', start_line: 0, start_column: 0 },
+        { code: 'MagicNumber', message: 'тест', severity: 'Information', start_line: 41, start_column: 3 },
+      ],
+      metrics: { functions: 1, complexity: 2, cognitive_complexity: 3 },
+    }),
+    JSON.stringify({ type: 'done', elapsed_secs: 0.01, total_files: 1, total_diagnostics: 2 }),
+  ].join('\n');
+
+  const na = analyzer.normalizeBslAnalyzer(jsonl, { root: cfRoot, base: proj });
+  check('bsl-analyzer: путь приведён к проектному', na.findings[0]?.file === 'src/cf/CommonModules/Тест/Ext/Module.bsl');
+  check('bsl-analyzer: нумерация строк приведена к человеческой', na.findings[1]?.line === 42);
+  check('bsl-analyzer: серьёзность отображена', na.findings[0]?.severity === 'major' && na.findings[1]?.severity === 'info');
+  check('bsl-analyzer: метрики собраны', na.metrics.get('src/cf/CommonModules/Тест/Ext/Module.bsl')?.functions === 1);
+
+  const lsReport = JSON.stringify({
+    fileinfos: [
+      {
+        path: pathToFileURL(modFile).href,
+        diagnostics: [{ code: { value: 'CommonModuleInvalidType' }, message: 'тест', severity: 'Major', range: { start: { line: 0, character: 0 } } }],
+      },
+      {
+        path: pathToFileURL(join(cfRoot, 'CommonModules', 'Другой', 'Ext', 'Module.bsl')).href,
+        diagnostics: [{ code: { value: 'LineLength' }, message: 'тест', severity: 'Minor', range: { start: { line: 7, character: 0 } } }],
+      },
+    ],
+  });
+  const nl = analyzer.normalizeBslLs(lsReport, { root: cfRoot, base: proj });
+  check('BSL LS: file:// URI разобран', nl.findings[0]?.file === 'src/cf/CommonModules/Тест/Ext/Module.bsl');
+  check('BSL LS: код диагностики извлечён из объекта', nl.findings[0]?.code === 'CommonModuleInvalidType');
+  const nlFiltered = analyzer.normalizeBslLs(lsReport, { root: cfRoot, base: proj, only: [modFile] });
+  check('BSL LS: фильтр по изменённым файлам работает', nlFiltered.findings.length === 1);
+
+  // След: чистый прогон отчитывается за весь набор, нарушения — по записи на код.
+  const evClean = analyzer.toEvidence({ findings: [], sentinelResult: { status: 'found' }, engine: 'bsl-analyzer', version: '1.2.3' });
+  check('чистый прогон помечен идентификатором набора', evClean.some((l) => l.includes('ids=[bslls:*]') && l.includes('verdict=clean')));
+  check('версия движка попала в след', evClean.some((l) => l.includes('engine=bsl-analyzer@1.2.3')));
+  const evDirty = analyzer.toEvidence({ findings: na.findings, sentinelResult: { status: 'found' }, engine: 'bsl-analyzer', version: '1.2.3' });
+  check('нарушения выведены по коду', evDirty.filter((l) => l.startsWith('[qg applied')).length === 2);
+
+  // Фикстура часового обязана оставаться НЕВАЛИДНОЙ по сочетанию флагов: валидное сочетание
+  // погасит диагностику, и часовой начнёт считать недостоверным любой прогон.
+  const fixture = readFileSync(join(ROOT, 'assets/analyzer/sentinel-fixture/CommonModules/QG_SentinelModule.xml'), 'utf8');
+  const allFalse = ['Server', 'ServerCall', 'ClientManagedApplication', 'ClientOrdinaryApplication', 'ExternalConnection'].every(
+    (flag) => fixture.includes(`<${flag}>false</${flag}>`)
+  );
+  check('фикстура часового осталась невалидной по типу модуля', allFalse);
+  check('фикстура зарегистрирована в составе конфигурации',
+    readFileSync(join(ROOT, 'assets/analyzer/sentinel-fixture/Configuration.xml'), 'utf8').includes('<CommonModule>QG_SentinelModule</CommonModule>'));
+}
+
+// ---------------------------------------------------------------------------
+section('Часовой проверяется по целям, а не «хотя бы один живой»');
+
+{
+  const head = '## quality evidence\n\n[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1]\n';
+  const clean = '[qg applied: layer=code, scope=static-analysis, ids=[bslls:*], verdict=clean]\n';
+  const notVerified = '[qg not_verified: dimension=compilation, reason=no_platform]\n';
+  const v8 = '[qg sentinel: target=v8std, id=std454, status=found]\n';
+  const bslls = '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found]\n';
+
+  const masked = writeBytes('ev-masked.md', head + v8 + clean + notVerified);
+  const r1 = run('tools/evidence-validator.mjs', [masked, '--gate']);
+  check('живой v8std НЕ маскирует отсутствие часового по анализатору', r1.code === 2, r1.out.trim().slice(0, 120));
+
+  const ok = writeBytes('ev-both.md', head + v8 + bslls + clean + notVerified);
+  const r2 = run('tools/evidence-validator.mjs', [ok, '--gate']);
+  check('оба часовых подтверждены — след принят', r2.code === 0, r2.out.trim().slice(0, 120));
+
+  const dead = writeBytes('ev-dead.md', head + v8 + '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=not_found]\n' + clean + notVerified);
+  const r3 = run('tools/evidence-validator.mjs', [dead, '--gate']);
+  check('часовой по анализатору не подтверждён — след отвергнут', r3.code === 2);
+
+  // Нарушения не требуют часового: «нашли» самодостаточно, недостоверно только «не нашли».
+  const onlyViolations = writeBytes('ev-viol.md', head + v8 + '[qg applied: layer=code, scope=static-analysis, ids=[bslls:MagicNumber], verdict=violation:bslls:MagicNumber]\n');
+  const r4 = run('tools/evidence-validator.mjs', [onlyViolations, '--gate']);
+  check('вердикт с нарушениями не требует часового по анализатору', r4.code === 0, r4.out.trim().slice(0, 120));
 }
 
 // ---------------------------------------------------------------------------

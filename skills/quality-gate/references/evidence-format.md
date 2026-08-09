@@ -60,7 +60,8 @@
 Обязательные поля: `layer`, `reason`.
 
 Типовые причины: `volume_below_threshold`, `not_applicable`, `contour_not_installed`,
-`lsp_unavailable`, `rlm_unavailable`, `platform_unavailable`, `stale_or_unavailable_index`.
+`analyzer_unavailable`, `rlm_unavailable`, `platform_unavailable`, `stale_or_unavailable_index`,
+`verified_earlier`.
 
 ### `not_verified` — измерение непроверяемо доступными средствами
 
@@ -82,16 +83,42 @@
 одной записи `not_verified`**: полностью зелёный отчёт, умалчивающий о непроверяемом, — это
 и есть та ложная зелень, против которой существует весь механизм.
 
-### `sentinel` — источник стандартов жив
+### `sentinel` — источник жив
 
 ```
 [qg sentinel: target=v8std, id=std454, status=found]
+[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.66]
 ```
 
 Обязательные поля: `target`, `status` (`found` либо `not_found`).
 
-Без этой записи «нарушений стандартов не найдено» неотличимо от «сервис стандартов
-недоступен». Прогон с `status=not_found` считается недостоверным.
+Без этой записи «нарушений не найдено» неотличимо от «источник недоступен». Прогон с
+`status=not_found` считается недостоверным.
+
+**Часовой проверяется по целям, а не «хотя бы один живой».** Иначе подтверждённый `v8std`
+маскирует мёртвый анализатор: в следе стоит `bslls:…` с вердиктом `clean`, рядом живой
+часовой по `v8std` — формально правило выполнено, а про анализатор не известно ничего.
+
+Правило: каждый вердикт `clean` опирается на источник, доказавший в этом прогоне, что он жив.
+
+| Идентификаторы в `ids` | Цель часового |
+|---|---|
+| `stdNNN`, `acc:NNN`, `v8cs:<код>` | `v8std` |
+| `bslls:<Код>`, `bslls:*` | `bslls` |
+| `qg:<ЭВРИСТИКА>`, `patterns:<путь>` | не требуется: это наши эвристики, внешнего источника у них нет |
+
+Часовой по `bslls` устроен как **фикстура**: мини-конфигурация из состава плагина с заведомо
+неверным сочетанием флагов общего модуля прогоняется тем же вызовом и тем же конфигом, что и
+рабочие файлы. Ожидается `CommonModuleInvalidType` — диагностика, читающая **метаданные**.
+Выбор не случаен: при потере контекста конфигурации гаснет именно этот класс проверок, а
+обычные замечания продолжают приходить, и отчёт выглядит рабочим. Часовой, доказывающий лишь
+«хоть что-то сработало», такую регрессию пропустит.
+
+Записи `sentinel` и `applied` по слою `code` формирует `tools/analyzer-run.mjs` — вручную их
+писать не нужно.
+
+`bslls:*` — законная форма для чистого прогона: перечислять полторы сотни проверенных кодов
+бессмысленно. Нарушения, наоборот, выводятся по записи на код.
 
 ## Переиспользование доказательств
 
@@ -124,7 +151,8 @@ node tools/evidence-validator.mjs <файл> --gate   # строгий, для �
 ```
 
 Строгий режим дополнительно требует: ровно одну запись `scope`, хотя бы одну
-`applied`/`skipped`, подтверждённый `sentinel` и `not_verified` при полностью чистом вердикте.
+`applied`/`skipped`, подтверждённый `sentinel` **по каждой цели, на которую опирается вердикт
+`clean`**, и `not_verified` при полностью чистом вердикте.
 
 Коды выхода: `0` — чисто, `1` — предупреждения, `2` — блокирующие нарушения.
 
@@ -135,7 +163,9 @@ node tools/evidence-validator.mjs <файл> --gate   # строгий, для �
 
 [qg scope: volume=C1, files=1, loc=+18/-3, archetypes=[query], complexity=[none], driver=archetype:query, resolved=code:L2|arch:skip|xml:n/a|hygiene:full]
 [qg sentinel: target=v8std, id=std454, status=found]
+[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.66]
 [qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM,qg:HYG-DASH], verdict=clean]
+[qg applied: layer=code, scope=static-analysis, ids=[bslls:MissingCodeTryCatchEx], verdict=violation:bslls:MissingCodeTryCatchEx]
 [qg applied: layer=code, scope=query-in-loop, ids=[std436,bslls:QueryInLoop], verdict=clean]
 [qg applied: layer=code, scope=attribute-access, ids=[std437], verdict=violation:std437]
 [qg skipped: layer=arch, reason=volume_below_threshold]
@@ -144,5 +174,7 @@ node tools/evidence-validator.mjs <файл> --gate   # строгий, для �
 ```
 
 Здесь видно не только что нашли, но и почему архитектурный контур не гонялся, почему XML
-неприменим и что компилируемость осталась непроверенной. Именно это отличает след от
+неприменим и что компилируемость осталась непроверенной. Обратите внимание на два часовых:
+вердикт `clean` в строке про `query-in-loop` опирается сразу на два источника — сервис
+стандартов и анализатор, — и оба обязаны подтвердить, что живы. Именно это отличает след от
 подписи «проверено».

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://1c-syntax.github.io/bsl-language-server/configuration/schema.json",
+  "diagnostics": {
+    "parameters": {
+      "LineLength": false,
+      "MissingSpace": false,
+      "SpaceAtStartComment": false,
+      "ConsecutiveEmptyLines": false,
+      "IncorrectLineBreak": false,
+      "SemicolonPresence": false,
+      "YoLetterUsage": false,
+      "Typo": false
+    }
+  }
+}

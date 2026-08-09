@@ -33,8 +33,24 @@ const REQUIRED = {
   sentinel: ['target', 'status'],
 };
 
-const ID_PATTERN = /^(std\d{3,4}|bslls:[A-Za-z][\w-]*|acc:\d{3,4}|v8cs:[\w-]+|qg:[A-Z]+-[A-Z0-9]+|patterns:[\w:-]+)$/;
+// `bslls:*` — законный идентификатор «весь набор правил анализатора»: перечислять полторы
+// сотни проверенных кодов в чистом прогоне бессмысленно, а формат уже использует эту форму
+// в поле `planned` записи skipped.
+const ID_PATTERN = /^(std\d{3,4}|bslls:(\*|[A-Za-z][\w-]*)|acc:\d{3,4}|v8cs:[\w-]+|qg:[A-Z]+-[A-Z0-9]+|patterns:[\w:-]+)$/;
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/**
+ * Внешний источник, которым подтверждается идентификатор.
+ *
+ * Наши собственные эвристики (`qg:`, `patterns:`) внешнего источника не имеют — часового по
+ * ним требовать не с кого. Всё остальное опирается на живой сервис или на живой анализатор,
+ * и «нарушений нет» по такому идентификатору достоверно лишь тогда, когда источник отвечал.
+ */
+function sentinelTarget(id) {
+  if (id.startsWith('bslls:')) return 'bslls';
+  if (/^std\d/.test(id) || id.startsWith('acc:') || id.startsWith('v8cs:')) return 'v8std';
+  return null;
+}
 
 /** Разбирает `k=v, k=[a,b]` в объект. Списки отличаются от скаляров по квадратным скобкам. */
 function parseFields(body) {
@@ -193,8 +209,36 @@ export function validate(text, { gate = false } = {}) {
     add('error', sentinels[0].line, 'sentinel не подтверждён (status=not_found): результат прогона недостоверен');
   }
 
-  // Вердикт «чисто» обязан признавать то, что проверить было нечем.
   const applied = records.filter((r) => r.type === 'applied');
+
+  // Часовой проверяется ПО ЦЕЛЯМ, а не «хотя бы один живой».
+  //
+  // Иначе подтверждённый v8std маскирует мёртвый анализатор: в следе стоит `bslls:...` с
+  // вердиктом clean, рядом `sentinel target=v8std status=found` — и правило выполнено, хотя
+  // про анализатор неизвестно ничего. Каждое «нарушений нет» обязано опираться на источник,
+  // который в этом прогоне доказал, что жив.
+  const neededTargets = new Set();
+  for (const rec of applied) {
+    if (rec.fields.verdict !== 'clean') continue;
+    const ids = Array.isArray(rec.fields.ids) ? rec.fields.ids : [];
+    for (const id of ids) {
+      const target = sentinelTarget(id);
+      if (target) neededTargets.add(target);
+    }
+  }
+  for (const target of [...neededTargets].sort()) {
+    const confirmed = sentinels.some((s) => s.fields.target === target && s.fields.status === 'found');
+    if (!confirmed) {
+      add(
+        'error',
+        0,
+        `вердикт «clean» опирается на источник "${target}", но подтверждённого часового по нему нет ` +
+          `(нужна запись sentinel с target=${target} и status=found)`
+      );
+    }
+  }
+
+  // Вердикт «чисто» обязан признавать то, что проверить было нечем.
   const allClean = applied.length > 0 && applied.every((r) => r.fields.verdict === 'clean');
   const hasNotVerified = records.some((r) => r.type === 'not_verified');
   if (allClean && !hasNotVerified) {

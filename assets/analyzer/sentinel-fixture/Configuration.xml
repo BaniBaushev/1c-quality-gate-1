@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Configuration uuid="0d8f0f2e-2b6a-4a3c-9a1f-2b0a5f7c1d01">
+		<Properties>
+			<Name>QG_SentinelFixture</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Фикстура часового контура качества</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<DefaultLanguage>Language.Ru</DefaultLanguage>
+		</Properties>
+		<ChildObjects>
+			<Language>Ru</Language>
+			<CommonModule>QG_SentinelModule</CommonModule>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>

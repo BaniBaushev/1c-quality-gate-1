@@ -4,3 +4,6 @@ tests/fixtures/** -text
 
 # Остальное — с нормализацией к LF в репозитории.
 * text=auto eol=lf
+
+# Фикстура часового: байты значимы (BOM), нормализация EOL недопустима
+assets/analyzer/sentinel-fixture/** -text
