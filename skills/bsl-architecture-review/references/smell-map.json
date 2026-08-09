@@ -1,0 +1,208 @@
+{
+  "$comment": "Карта «архитектурный запах → измеримый сигнал → принцип проектирования». Первичный ключ ссылки — URL: он самопроверяем и устойчив к изменению схемы идентификаторов. Тексты принципов не хранятся — запрашиваются через MCP v8std по URL.",
+  "version": 1,
+  "smells": [
+    {
+      "id": "ARCH-A1",
+      "smell": "Модуль-комбайн",
+      "signal": "экспортные методы кластеризуются по несвязанным предметным группам",
+      "threshold": ">=3 несвязанные группы ИЛИ вызывающие из >=3 подсистем",
+      "counter": "фасад подсистемы: >=80% экспортов — делегирования в 5 строк или короче",
+      "principles": [
+        {
+          "title": "Single Responsibility Principle (SRP)",
+          "url": "https://v8std.ru/patterns/solid/single-responsibility/"
+        },
+        {
+          "title": "Separation of Concerns",
+          "url": "https://v8std.ru/patterns/engineering/separation-of-concerns/"
+        }
+      ],
+      "std": [
+        "std440"
+      ]
+    },
+    {
+      "id": "ARCH-A2",
+      "smell": "Ветвление вместо полиморфизма",
+      "signal": "цепочка ИначеЕсли по типу значения или строковому коду",
+      "threshold": ">=4 ветви ИЛИ 2 цепочки по одному признаку",
+      "counter": "единственный метод-диспетчер с однострочными делегированиями — в 1С это и есть полиморфизм",
+      "principles": [
+        {
+          "title": "Полиморфизм (Polymorphism)",
+          "url": "https://v8std.ru/patterns/grasp/polymorphism/"
+        },
+        {
+          "title": "Стратегия (Strategy)",
+          "url": "https://v8std.ru/patterns/gof/strategy/"
+        },
+        {
+          "title": "Принципы ООП",
+          "url": "https://v8std.ru/patterns/principles/"
+        }
+      ],
+      "std": []
+    },
+    {
+      "id": "ARCH-A3",
+      "smell": "Дубль-алгоритм, форк-парсер",
+      "signal": ">=2 метода одинаковой структуры, различие только в литералах",
+      "threshold": "2 копии — сигнал, 3 — нарушение",
+      "counter": "форма входа доказуемо не выражается общим дескриптором",
+      "principles": [
+        {
+          "title": "DRY (Don't Repeat Yourself)",
+          "url": "https://v8std.ru/patterns/engineering/dry/"
+        },
+        {
+          "title": "Rule of Three (Правило трех)",
+          "url": "https://v8std.ru/patterns/engineering/rule-of-three/"
+        },
+        {
+          "title": "Open/Closed Principle ( OCP )",
+          "url": "https://v8std.ru/patterns/solid/open-closed/"
+        }
+      ],
+      "std": [
+        "std440"
+      ]
+    },
+    {
+      "id": "ARCH-A4",
+      "smell": "Параллельная коллекция вместо поля в носителе",
+      "signal": "результаты цикла собираются в Соответствие и связываются обратно по ключу из исходной коллекции",
+      "threshold": "наличие пары «сбор + обратное связывание»",
+      "counter": "связываются наборы из разных источников, и объединение в один носитель невозможно",
+      "principles": [
+        {
+          "title": "Информационный эксперт (Information Expert)",
+          "url": "https://v8std.ru/patterns/grasp/information-expert/"
+        },
+        {
+          "title": "Высокая связность (High Cohesion)",
+          "url": "https://v8std.ru/patterns/grasp/high-cohesion/"
+        }
+      ],
+      "std": []
+    },
+    {
+      "id": "ARCH-A5",
+      "smell": "Перекладка локальных переменных",
+      "signal": "цепочка переменных, каждая присваивается и читается ровно один раз, чтобы накормить следующий шаг",
+      "threshold": ">=4 звена",
+      "counter": "шаги содержательно различны и каждый ветвится по-своему",
+      "principles": [
+        {
+          "title": "Separation of Concerns",
+          "url": "https://v8std.ru/patterns/engineering/separation-of-concerns/"
+        },
+        {
+          "title": "Высокая связность (High Cohesion)",
+          "url": "https://v8std.ru/patterns/grasp/high-cohesion/"
+        }
+      ],
+      "std": [
+        "std453"
+      ]
+    },
+    {
+      "id": "ARCH-A6",
+      "smell": "Инлайн-конструирование контракта",
+      "signal": ">=4 подряд Вставить в структуру, которая возвращается из экспортной функции",
+      "threshold": ">=4 вставок плюс возврат структуры",
+      "counter": "одноразовая локальная структура на 1-2 поля внутри приватного метода",
+      "principles": [
+        {
+          "title": "Создатель (Creator)",
+          "url": "https://v8std.ru/patterns/grasp/creator/"
+        },
+        {
+          "title": "Строитель (Builder)",
+          "url": "https://v8std.ru/patterns/gof/builder/"
+        }
+      ],
+      "std": []
+    },
+    {
+      "id": "ARCH-A7",
+      "smell": "Дублирующая валидация",
+      "signal": "одна и та же проверка заполненности или типа у вызывающего и внутри вызываемого",
+      "threshold": "2 уровня проверки одного значения",
+      "counter": "вызываемый метод экспортный и имеет несколько независимых вызывающих",
+      "principles": [
+        {
+          "title": "Низкая связанность (Low Coupling)",
+          "url": "https://v8std.ru/patterns/grasp/low-coupling/"
+        },
+        {
+          "title": "DRY (Don't Repeat Yourself)",
+          "url": "https://v8std.ru/patterns/engineering/dry/"
+        }
+      ],
+      "std": []
+    },
+    {
+      "id": "ARCH-A8",
+      "smell": "Инфраструктура в прикладном коде",
+      "signal": "HTTP-соединение, внешняя компонента или COM-объект прямо в модуле объекта либо формы",
+      "threshold": "любое вхождение",
+      "counter": "одноразовая служебная обработка без прикладной логики",
+      "principles": [
+        {
+          "title": "Dependency Inversion Principle (DIP)",
+          "url": "https://v8std.ru/patterns/solid/dependency-inversion/"
+        },
+        {
+          "title": "Фасад (Facade)",
+          "url": "https://v8std.ru/patterns/gof/facade/"
+        },
+        {
+          "title": "Адаптер (Adapter)",
+          "url": "https://v8std.ru/patterns/gof/adapter/"
+        }
+      ],
+      "std": []
+    },
+    {
+      "id": "ARCH-A9",
+      "smell": "Экспорт без потребителей",
+      "signal": "экспортный метод, у которого не найдено ни вызывающих, ни триггеров",
+      "threshold": "нет точных вызывающих И нет триггеров",
+      "counter": "ВАЖНО: в 1С экспорт вызывается из XML (подписки, команды, регламентные задания, настройки библиотек), из расширений и внешних обработок — без проверки триггеров находка не выводится вообще",
+      "principles": [
+        {
+          "title": "Interface Segregation Principle (ISP)",
+          "url": "https://v8std.ru/patterns/solid/interface-segregation/"
+        },
+        {
+          "title": "YAGNI (You Aren't Gonna Need It)",
+          "url": "https://v8std.ru/patterns/engineering/yagni/"
+        }
+      ],
+      "std": []
+    },
+    {
+      "id": "ARCH-A10",
+      "smell": "Переусложнение, преждевременная гибкость",
+      "signal": "механизм расширяемости с единственной реализацией; абстракция без второй точки изменения",
+      "threshold": "1 реализация",
+      "counter": "вторая реализация уже спроектирована и запланирована в этой же задаче",
+      "principles": [
+        {
+          "title": "KISS (Keep It Simple, Stupid)",
+          "url": "https://v8std.ru/patterns/engineering/kiss/"
+        },
+        {
+          "title": "YAGNI (You Aren't Gonna Need It)",
+          "url": "https://v8std.ru/patterns/engineering/yagni/"
+        },
+        {
+          "title": "Rule of Three (Правило трех)",
+          "url": "https://v8std.ru/patterns/engineering/rule-of-three/"
+        }
+      ],
+      "std": []
+    }
+  ]
+}
