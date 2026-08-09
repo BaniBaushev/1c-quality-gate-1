@@ -297,6 +297,7 @@ const mustContain = [
   ['skills/bsl-architecture-review/references/ai-antipatterns-arch.md', 'ARCH-AI-05', 'параллельная коллекция вместо поля'],
   ['skills/xml-structure-review/SKILL.md', 'ChildObjects', 'проверка регистрации в составе'],
   ['shared/routing-contract.md', 'радиус', 'граница контуров по радиусу правки'],
+  ['skills/bsl-code-review/SKILL.md', 'артефакт области анализа', 'ложные UnresolvedMethodCall при анализе CFE без основной конфигурации'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
