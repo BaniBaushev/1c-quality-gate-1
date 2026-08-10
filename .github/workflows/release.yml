@@ -1,0 +1,67 @@
+name: release
+
+# Релиз выпускается пушем аннотированного тега vX.Y.Z. Тег — это то, что реально едет
+# пользователям: запись в marketplace.json пиннится на него полем source.ref.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Нужен объект аннотированного тега целиком: из его сообщения берётся описание релиза.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Зависимости валидаторов XML
+        run: pip install --disable-pip-version-check "lxml==6.1.1"
+
+      # Релиз без прогона — гейт, который сам себя не проверил. Здесь же сверяется, что имя
+      # тега совпадает с version в plugin.json и с source.ref в marketplace.json.
+      - name: Целостность пакета и совпадение тега с версией
+        run: node tools/validate-package.mjs
+
+      - name: Синтаксис валидаторов XML
+        run: python -m compileall -q tools/xml
+
+      - name: Производная карта признаков синхронна с источником
+        run: |
+          node tools/gen-signs-map-md.mjs
+          git diff --exit-code skills/bsl-architecture-review/references/signs-map.md \
+            || { echo "::error::signs-map.md устарел, перегенерируй: node tools/gen-signs-map-md.mjs"; exit 1; }
+
+      - name: Тесты программных проверок
+        run: node tests/run-tests.mjs
+
+      # Описание берётся из сообщения аннотированного тега: это единственный источник, который
+      # нельзя рассинхронизировать с помеченным коммитом. Лёгкий тег и пустое сообщение
+      # останавливают выпуск — релиз без описания неотличим от релиза, о котором забыли.
+      - name: Описание релиза из аннотированного тега
+        run: |
+          if [ "$(git cat-file -t "$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "::error::Тег $GITHUB_REF_NAME лёгкий, описание брать неоткуда. Нужен аннотированный: git tag -a $GITHUB_REF_NAME -m '...'"
+            exit 1
+          fi
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::Сообщение тега $GITHUB_REF_NAME пустое. Порядок выпуска: docs/RELEASING.md"
+            exit 1
+          fi
+
+      - name: Создать релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md

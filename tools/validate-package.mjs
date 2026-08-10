@@ -104,6 +104,28 @@ if (plugin && market) {
   } else if (entry.version !== plugin.version) {
     fail('marketplace.json', `версия ${entry.version} расходится с plugin.json (${plugin.version})`);
   }
+
+  // Запись пиннится на тег релиза: main остаётся рабочей веткой, а пользователю едет только
+  // помеченное дерево. Поднятая версия при забытом ref означает, что пользователь получит
+  // старый код под новым номером — ровно та ложная зелень, против которой написан весь плагин.
+  const src = entry && entry.source;
+  if (src && typeof src === 'object' && src.source === 'github') {
+    const expected = `v${plugin.version}`;
+    if (src.ref !== expected) {
+      fail('marketplace.json', `source.ref "${src.ref}" расходится с версией плагина (ожидается "${expected}")`);
+    }
+  }
+}
+
+// --- 1б. Тег релиза совпадает с версией --------------------------------------
+// Проверка живёт только в сборке по тегу: GITHUB_REF_TYPE выставляет CI. Локально переменной
+// нет, и проверка молчит — сверять нечего.
+if (plugin && process.env.GITHUB_REF_TYPE === 'tag') {
+  const tag = process.env.GITHUB_REF_NAME || '';
+  const expected = `v${plugin.version}`;
+  if (tag !== expected) {
+    fail('тег релиза', `тег ${tag} расходится с версией в plugin.json (ожидается ${expected})`);
+  }
 }
 
 // --- 2. Все JSON валидны -----------------------------------------------------

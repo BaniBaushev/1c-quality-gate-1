@@ -12,6 +12,10 @@ Thumbs.db
 node_modules/
 package-lock.json
 
+# Python: байт-код валидаторов XML. Появляется от python -m compileall в CI и локально
+__pycache__/
+*.py[cod]
+
 # Рабочее пространство редактора — локальная вещь
 *.code-workspace
 
