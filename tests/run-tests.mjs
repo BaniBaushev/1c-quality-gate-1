@@ -322,7 +322,7 @@ const mustContain = [
   ['skills/bsl-architecture-review/references/ai-antipatterns-arch.md', 'ARCH-AI-05', 'параллельная коллекция вместо поля'],
   ['skills/xml-structure-review/SKILL.md', 'ChildObjects', 'проверка регистрации в составе'],
   ['shared/routing-contract.md', 'радиус', 'граница контуров по радиусу правки'],
-  ['skills/bsl-code-review/SKILL.md', 'артефакт области анализа', 'ложные UnresolvedMethodCall при анализе CFE без основной конфигурации'],
+  ['skills/bsl-code-review/SKILL.md', 'НЕ РАЗОБРАНО', 'неразобранные файлы называются явно'],
   ['skills/xml-structure-review/SKILL.md', '-Path', 'универсальное имя параметра валидаторов XML'],
 ];
 for (const [file, needle, label] of mustContain) {
@@ -421,6 +421,52 @@ section('Статический анализатор — нормализаци�
   check('версия движка попала в след', evClean.some((l) => l.includes('engine=bsl-analyzer@1.2.3')));
   const evDirty = analyzer.toEvidence({ findings: na.findings, sentinelResult: { status: 'found' }, engine: 'bsl-analyzer', version: '1.2.3' });
   check('нарушения выведены по коду', evDirty.filter((l) => l.startsWith('[qg applied')).length === 2);
+
+  // Раскладка проекта: расширение отличается от основной конфигурации назначением в корневом
+  // XML. Без этого различения анализ идёт по расширению в одиночку, имена БСП неразрешимы, и
+  // треть находок становится ложной — измерено на боевом коде.
+  const proj2 = join(WORK, 'layout');
+  const mainRoot = join(proj2, 'src', 'cf');
+  const extRoot = join(proj2, 'src', 'cfe', 'Расш');
+  mkdirSync(mainRoot, { recursive: true });
+  mkdirSync(extRoot, { recursive: true });
+  writeFileSync(join(mainRoot, 'Configuration.xml'), '<Configuration><Name>Основная</Name></Configuration>', 'utf8');
+  writeFileSync(join(extRoot, 'Configuration.xml'), '<Configuration><ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose></Configuration>', 'utf8');
+
+  const layout = analyzer.discoverLayout(proj2);
+  check('основная конфигурация опознана', layout.main === mainRoot, layout.main);
+  check('расширение опознано по назначению', layout.extensions.length === 1 && layout.extensions[0] === extRoot);
+
+  const toml = analyzer.buildProjectConfig({ layout, root: proj2 });
+  check('в конфиг попал корень основной конфигурации', toml.includes('[source]') && toml.includes('root = "src/cf"'));
+  check('в конфиг попало расширение', /extensions = \[\s*\n\s*"src\/cfe\/Расш",/.test(toml), toml.split('\n').slice(0, 6).join(' | '));
+
+  // Неразобранный файл: сотни ParseError — это не сотни проблем, а отсутствие анализа.
+  const parseFail = [
+    JSON.stringify({
+      type: 'file',
+      path: '\\\\?\\' + modFile,
+      diagnostics: [
+        { code: 'ParseError', message: 'x', severity: 'Major', start_line: 1 },
+        { code: 'ParseError', message: 'x', severity: 'Major', start_line: 2 },
+        { code: 'MagicNumber', message: 'x', severity: 'Information', start_line: 3 },
+      ],
+    }),
+  ].join('\n');
+  const np = analyzer.normalizeBslAnalyzer(parseFail, { root: cfRoot, base: proj });
+  check('ошибки разбора вынесены из находок', np.findings.length === 0, JSON.stringify(np.findings));
+  check('файл помечен неразобранным', np.unparsed.get('src/cf/CommonModules/Тест/Ext/Module.bsl') === 2);
+
+  const evUnparsed = analyzer.toEvidence({
+    findings: [], sentinelResult: { status: 'found' }, engine: 'bsl-analyzer', version: '1.0.0', unparsed: np.unparsed,
+  });
+  check('неразобранное попало в след как not_verified', evUnparsed.some((l) => l.includes('reason=parse_failed')));
+
+  const evExtOnly = analyzer.toEvidence({
+    findings: [], sentinelResult: { status: 'found' }, engine: 'bsl-analyzer', version: '1.0.0', resolution: 'extension-only',
+  });
+  check('разбор без основной конфигурации отмечен в следе', evExtOnly.some((l) => l.includes('main_configuration_absent')));
+  check('семейство неразрешимого перечислено', analyzer.UNRESOLVED_WITHOUT_MAIN.has('UnresolvedMethodCall') && analyzer.UNRESOLVED_WITHOUT_MAIN.has('UnknownFieldInQuery'));
 
   // Фикстура часового обязана оставаться НЕВАЛИДНОЙ по сочетанию флагов: валидное сочетание
   // погасит диагностику, и часовой начнёт считать недостоверным любой прогон.

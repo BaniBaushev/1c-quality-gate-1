@@ -21,7 +21,7 @@
  * 2 — обязателен и недоступен, либо часовой не подтверждён.
  */
 
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -36,6 +36,20 @@ const CONFIG_MARKER = 'Configuration.xml';
 
 /** Часовой требует диагностику, ЗАВИСЯЩУЮ ОТ МЕТАДАННЫХ, — см. sentinel() ниже. */
 export const SENTINEL_CODE = 'CommonModuleInvalidType';
+
+/**
+ * Диагностики, недостоверные при разборе расширения без основной конфигурации: имена БСП и
+ * типовой в нём отсутствуют физически, поэтому «не удалось разрешить» относится к области
+ * анализа, а не к коду. Измерено на боевых расширениях: до трети всех находок.
+ */
+export const UNRESOLVED_WITHOUT_MAIN = new Set([
+  'UnresolvedMethodCall',
+  'UnresolvedField',
+  'QueryToMissingMetadata',
+  'UnknownFieldInQuery',
+  'MismatchedArgCount',
+  'MissedRequiredParameter',
+]);
 
 export const DEFAULT_ANALYZER = {
   engine: 'bsl-analyzer',
@@ -106,6 +120,71 @@ export function findConfigRoot(file, stopAt = projectRoot()) {
     if (!dir.startsWith(stop)) return null;
     dir = parent;
   }
+}
+
+/** В корневом XML расширения есть назначение; у основной конфигурации его нет. */
+const EXTENSION_MARKER = '<ConfigurationExtensionPurpose>';
+const SKIP_DIRS = new Set(['.git', '.claude', 'node_modules', 'build', 'out', 'dist', '.qg-analyzer']);
+
+/**
+ * Находит раскладку проекта: корень основной конфигурации и корни расширений.
+ *
+ * Зачем. Расширение, разобранное в одиночку, не видит ни основной конфигурации, ни БСП —
+ * и каждое обращение к `ОбщегоНазначения` становится «неразрешённым вызовом». На боевых
+ * расширениях это треть всех находок: шум, после которого проверку отключают. Анализатор
+ * умеет принимать состав проекта секцией `[source]`, и тогда чужие имена разрешаются.
+ */
+export function discoverLayout(root = projectRoot(), maxDepth = 4) {
+  const main = [];
+  const extensions = [];
+
+  const walk = (dir, depth) => {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isFile() && e.name === CONFIG_MARKER)) {
+      let head = '';
+      try {
+        head = readFileSync(join(dir, CONFIG_MARKER), 'utf8').slice(0, 8192);
+      } catch {
+        /* нечитаемый корень пропускаем молча: это не наша ошибка */
+      }
+      (head.includes(EXTENSION_MARKER) ? extensions : main).push(dir);
+      return; // внутрь корня конфигурации не спускаемся
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue;
+      walk(join(dir, e.name), depth + 1);
+    }
+  };
+  walk(resolve(root), 0);
+
+  // Несколько основных конфигураций в одном проекте — редкость (обычно это выгрузка для
+  // сравнения). Берём первую по алфавиту, чтобы результат был воспроизводим.
+  return { main: main.sort()[0] || null, mainCandidates: main.sort(), extensions: extensions.sort() };
+}
+
+/**
+ * Собирает конфиг анализатора: наши настройки диагностик плюс состав проекта.
+ *
+ * Настройки берутся из состава плагина, состав — из раскладки. Проектный конфиг анализатора
+ * не читается намеренно: отключённая в нём диагностика делала бы гейт тише.
+ */
+export function buildProjectConfig({ layout, root = projectRoot(), baseConfig = null }) {
+  const rel = (p) => relative(resolve(root), resolve(p)).split(sep).join('/');
+  const lines = ['[source]', `root = "${rel(layout.main)}"`];
+  if (layout.extensions.length) {
+    lines.push('extensions = [');
+    for (const e of layout.extensions) lines.push(`  "${rel(e)}",`);
+    lines.push(']');
+  }
+  lines.push('');
+  const base = baseConfig && existsSync(baseConfig) ? readFileSync(baseConfig, 'utf8') : '';
+  return `# Сгенерировано плагином 1c-quality-gate. Правки будут перезаписаны.\n` + lines.join('\n') + '\n' + base;
 }
 
 /** Группирует изменённые файлы по корням конфигураций: в проекте их может быть несколько. */
@@ -192,10 +271,19 @@ export function engineVersion(binary) {
   return m ? m[1] : null;
 }
 
-/** Нормализует jsonl bsl-analyzer. Нумерация строк у него нулевая — приводим к человеческой. */
+/**
+ * Нормализует jsonl bsl-analyzer. Нумерация строк у него нулевая — приводим к человеческой.
+ *
+ * Ошибки разбора выносятся отдельно от находок. Модуль, который не разобрался, выдаёт их
+ * сотнями (реальный случай: 279 в одном файле — директивы `#Удаление` внутри многострочного
+ * литерала в модуле `&ИзменениеИКонтроль`). Показать их как находки значит утверждать, что в
+ * файле три сотни проблем, тогда как по нему не проверено НИЧЕГО. Это надо называть своим
+ * именем: файл не проанализирован.
+ */
 export function normalizeBslAnalyzer(stdout, { root, base = projectRoot() } = {}) {
   const findings = [];
   const metrics = new Map();
+  const unparsed = new Map();
   for (const line of String(stdout).split(/\r?\n/)) {
     if (!line.trim()) continue;
     let rec;
@@ -208,6 +296,10 @@ export function normalizeBslAnalyzer(stdout, { root, base = projectRoot() } = {}
     const file = toRelative(rec.path, base, root);
     if (rec.metrics) metrics.set(file, rec.metrics);
     for (const d of rec.diagnostics || []) {
+      if (d.code === 'ParseError') {
+        unparsed.set(file, (unparsed.get(file) || 0) + 1);
+        continue;
+      }
       findings.push({
         file,
         line: (d.start_line ?? 0) + 1,
@@ -218,7 +310,10 @@ export function normalizeBslAnalyzer(stdout, { root, base = projectRoot() } = {}
       });
     }
   }
-  return { findings, metrics };
+  // Из файла, который не разобрался, остальные находки тоже недостоверны: они получены на
+  // обрывке синтаксического дерева.
+  const clean = findings.filter((f) => !unparsed.has(f.file));
+  return { findings: clean, metrics, unparsed };
 }
 
 /** Нормализует JSON-отчёт BSL Language Server (`-r json`). У него нумерация тоже нулевая. */
@@ -228,7 +323,7 @@ export function normalizeBslLs(jsonText, { root, base = projectRoot(), only = nu
   try {
     parsed = JSON.parse(jsonText);
   } catch {
-    return { findings, metrics: new Map() };
+    return { findings, metrics: new Map(), unparsed: new Map() };
   }
   const keep = only ? new Set(only.map((f) => toRelative(f, base, root))) : null;
   for (const f of parsed.fileinfos || []) {
@@ -367,12 +462,22 @@ function collectBsl(dir, acc = []) {
  * сотни проверенных кодов бессмысленно. Нарушения выводятся по одной записи на код: так в
  * следе видно, ЧТО именно сработало, а не только что «что-то нашли».
  */
-export function toEvidence({ findings, sentinelResult, engine, version }) {
+export function toEvidence({ findings, sentinelResult, engine, version, unparsed = new Map(), resolution = null }) {
   const lines = [];
   const stamp = version ? `${engine}@${version}` : engine;
   lines.push(
     `[qg sentinel: target=bslls, id=${SENTINEL_CODE}, status=${sentinelResult.status}, engine=${stamp}]`
   );
+  // Неразобранный файл — не «чисто» и не «нарушение», а отсутствие проверки. Без этой записи
+  // он растворяется в общем вердикте и выглядит проверенным.
+  if (unparsed.size) {
+    lines.push(`[qg not_verified: dimension=static-analysis, reason=parse_failed, files=${unparsed.size}]`);
+  }
+  // Разрешение чужих имён без основной конфигурации невозможно: об этом надо сказать, иначе
+  // отсутствие находок по межфайловым связям читается как их отсутствие в коде.
+  if (resolution === 'extension-only') {
+    lines.push('[qg not_verified: dimension=cross-config-resolution, reason=main_configuration_absent]');
+  }
   const codes = [...new Set(findings.map((f) => f.code))].sort();
   if (codes.length === 0) {
     lines.push('[qg applied: layer=code, scope=static-analysis, ids=[bslls:*], verdict=clean]');
@@ -487,37 +592,86 @@ async function main(argv) {
     return 2;
   }
 
-  const { groups, orphans } = groupByConfigRoot(args.changed, root);
   const findings = [];
   const metrics = new Map();
+  const unparsed = new Map();
+  let orphans = [];
+  let resolution = 'full';
 
-  for (const [cfgRoot, files] of groups) {
-    const raw =
-      engine === 'bsl-ls'
-        ? runBslLs({ jar, root: cfgRoot, configPath })
-        : runBslAnalyzer({ binary, root: cfgRoot, changed: files, configPath });
+  // Раскладка проекта важнее группировки по корням: если основная конфигурация есть, анализ
+  // идёт от корня проекта с объявленным составом, и чужие имена разрешаются. Иначе получаем
+  // треть находок из «не удалось разрешить ОбщегоНазначения» — измерено на боевом коде.
+  const layout = engine === 'bsl-ls' ? { main: null, extensions: [] } : discoverLayout(root);
+
+  if (layout.main) {
+    const generated = join(root, '.claude', '.state', 'qg-analyzer.toml');
+    mkdirSync(dirname(generated), { recursive: true });
+    writeFileSync(generated, buildProjectConfig({ layout, root, baseConfig: configPath }), 'utf8');
+    // В stderr, а не в stdout: с `--json` любая посторонняя строка ломает разбор вывода.
+    process.stderr.write(
+      `Состав проекта: основная конфигурация ${relative(root, layout.main).split(sep).join('/')}` +
+        (layout.extensions.length ? `, расширений ${layout.extensions.length}` : '') +
+        '\n'
+    );
+    const raw = runBslAnalyzer({ binary, root, changed: args.changed.map((f) => resolve(f)), configPath: generated });
     if (!raw.ok) {
-      process.stderr.write(`Анализатор завершился неуспешно на ${cfgRoot}\n${raw.stderr.slice(0, 500)}\n`);
+      process.stderr.write(`Анализатор завершился неуспешно\n${raw.stderr.slice(0, 500)}\n`);
       return cfg.required ? 2 : 1;
     }
-    const norm =
-      engine === 'bsl-ls'
-        ? normalizeBslLs(raw.stdout, { root: cfgRoot, base: root, only: files })
-        : normalizeBslAnalyzer(raw.stdout, { root: cfgRoot, base: root });
+    const norm = normalizeBslAnalyzer(raw.stdout, { root, base: root });
     findings.push(...norm.findings);
     for (const [k, v] of norm.metrics) metrics.set(k, v);
+    for (const [k, v] of norm.unparsed) unparsed.set(k, v);
+  } else {
+    const grouped = groupByConfigRoot(args.changed, root);
+    orphans = grouped.orphans;
+    resolution = grouped.groups.size ? 'extension-only' : 'full';
+    for (const [cfgRoot, files] of grouped.groups) {
+      const raw =
+        engine === 'bsl-ls'
+          ? runBslLs({ jar, root: cfgRoot, configPath })
+          : runBslAnalyzer({ binary, root: cfgRoot, changed: files, configPath });
+      if (!raw.ok) {
+        process.stderr.write(`Анализатор завершился неуспешно на ${cfgRoot}\n${raw.stderr.slice(0, 500)}\n`);
+        return cfg.required ? 2 : 1;
+      }
+      const norm =
+        engine === 'bsl-ls'
+          ? normalizeBslLs(raw.stdout, { root: cfgRoot, base: root, only: files })
+          : normalizeBslAnalyzer(raw.stdout, { root: cfgRoot, base: root });
+      findings.push(...norm.findings);
+      for (const [k, v] of norm.metrics) metrics.set(k, v);
+      for (const [k, v] of norm.unparsed) unparsed.set(k, v);
+    }
   }
 
-  const evidence = toEvidence({ findings, sentinelResult, engine, version });
+  // Разбирали расширение в одиночку — значит имена основной конфигурации и БСП неразрешимы
+  // по построению. Такие находки не удаляем (скрывать нельзя: среди них бывают и настоящие,
+  // если неразрешимо имя из самого расширения), но понижаем до информационных, иначе они
+  // забивают отчёт: на боевом расширении их было 523 из 2310.
+  if (resolution === 'extension-only') {
+    for (const f of findings) {
+      if (UNRESOLVED_WITHOUT_MAIN.has(f.code)) f.severity = 'info';
+    }
+  }
+
+  const evidence = toEvidence({ findings, sentinelResult, engine, version, unparsed, resolution });
 
   if (args.json) {
-    out(JSON.stringify({ engine, version, sentinel: sentinelResult, findings, metrics: Object.fromEntries(metrics), evidence, orphans }, null, 2));
+    out(JSON.stringify({ engine, version, sentinel: sentinelResult, resolution, findings, metrics: Object.fromEntries(metrics), unparsed: Object.fromEntries(unparsed), evidence, orphans }, null, 2));
     return sentinelResult.status === 'found' ? 0 : 2;
   }
 
   if (!args.evidenceOnly) {
     if (orphans.length) {
       out(`Вне корня конфигурации (не анализировались): ${orphans.join(', ')}`);
+    }
+    if (resolution === 'extension-only') {
+      out('Основная конфигурация не найдена: имена из неё и из БСП не разрешаются — неразрешённые вызовы к ним не выводятся как находки.');
+    }
+    if (unparsed.size) {
+      out(`НЕ РАЗОБРАНО файлов: ${unparsed.size} — по ним не проверено ничего:`);
+      for (const [f, n] of unparsed) out(`  ${f} (ошибок разбора: ${n})`);
     }
     out(`Движок: ${engine}${version ? ' ' + version : ''} | часовой: ${sentinelResult.status} | находок: ${findings.length}`);
     report(findings, out, { all: args.all });
