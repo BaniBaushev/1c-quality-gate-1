@@ -161,6 +161,8 @@
 | [`/gate`](commands/gate.md) | команда | прогон `quality-gate` целиком и снятие гейта; принимает `--deep`, `--quick`, `--fix` |
 | [`/gate-status`](commands/gate-status.md) | команда | охват взведённого гейта и ожидаемый класс правки; гейт не снимает |
 | [`bsl-verifier`](agents/bsl-verifier.md) | субагент | механический чеклист после правки `.bsl`: сигнатуры платформы, существование и экспортность общих модулей, состав метаданных, диагностики, именование. Логику и архитектуру не проверяет |
+| [`bsl-scout`](agents/bsl-scout.md) | субагент | факты из индекса кода для контура архитектуры: вызывающие, экспорты модуля, триггеры экспорта в XML. Вердиктов не выносит |
+| [`xml-runner`](agents/xml-runner.md) | субагент | прогон сверки «диск ↔ состав» и валидаторов структуры по изменённым файлам, разбор их вывода в короткий вердикт |
 | [`gate-arm.mjs`](hooks/gate-arm.mjs) | хук `PostToolUse` | взводит гейт на правках `.bsl`, `.os` и XML метаданных, снимает с файла отметки проверенного; в не-1С проектах молчит |
 | [`gate-check.mjs`](hooks/gate-check.mjs) | хук `Stop` | блокирует завершение своей сессии, пока гейт не снят; при внутренней ошибке завершается кодом 0 без сообщения |
 | `v8std` | MCP | тексты стандартов `#stdNNN` и расшифровка диагностик во время прогона; объявлен в [.mcp.json](.mcp.json) |
@@ -455,7 +457,7 @@ node tools/gen-signs-map-md.mjs      # перегенерация signs-map.md, 
 | [skills/bsl-architecture-review/](skills/bsl-architecture-review/SKILL.md) | контур архитектуры, карта признаков `signs-map.json`, паттерны в 1С |
 | [skills/xml-structure-review/](skills/xml-structure-review/SKILL.md) | контур XML метаданных |
 | [skills/file-hygiene/](skills/file-hygiene/SKILL.md) | контур гигиены файлов |
-| [agents/](agents/bsl-verifier.md), [commands/](commands/gate.md) | субагент-верификатор и слэш-команды |
+| [agents/](agents/bsl-verifier.md), [commands/](commands/gate.md) | субагенты-верификатор и разведчик, слэш-команды |
 | [hooks/](hooks/hooks.json) | взвод гейта на правке, блокировка завершения сессии |
 | [tools/](tools/gate.mjs) | исполняемые проверки: Node.js без зависимостей, валидаторы XML на Python |
 | [shared/](shared/routing-contract.md) | знание, общее для нескольких навыков: контракт маршрутизации |
