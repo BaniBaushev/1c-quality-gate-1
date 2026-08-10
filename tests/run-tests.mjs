@@ -418,7 +418,7 @@ for (const [file, needle, label] of mustContain) {
   // кода они не «чисто», а `skipped`. Иначе контур молча не проверит треть карты, а отчёт
   // будет выглядеть полным — тот же ложный зелёный, который он ищет в чужом коде.
   const needGraph = (map.signs || []).filter((s) => s.requires?.includes('call-graph')).map((s) => s.id).sort();
-  check('признаки по графу вызовов размечены', needGraph.join(',') === 'ARCH-A1,ARCH-A7,ARCH-A9', needGraph.join(',') || 'ни одного');
+  check('признаки по графу вызовов размечены', needGraph.join(',') === 'ARCH-A1,ARCH-A11,ARCH-A7,ARCH-A9', needGraph.join(',') || 'ни одного');
 
   const skill = readFileSync(join(ROOT, 'skills/bsl-architecture-review/SKILL.md'), 'utf8');
   check('правило пропуска при отсутствии индекса описано', skill.includes('reason=rlm_unavailable') && skill.includes('call-graph-signs'));
