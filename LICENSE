@@ -32,3 +32,41 @@ SOFTWARE.
 (URL и номера вида #stdNNN) и получает тексты во время работы через MCP-сервис
 v8std (https://ai.v8std.ru/mcp). Правила и рекомендации изложены авторами
 своими словами со ссылкой на соответствующий номер стандарта.
+
+---
+
+Сторонние компоненты.
+
+1. Валидаторы XML метаданных в tools/xml/*.py портированы из проекта cc-1c-skills
+   (https://github.com/Nikolay-Shirokov/cc-1c-skills) и распространяются на
+   условиях лицензии MIT. Ссылка на источник и уведомление об авторских правах
+   сохранены в шапке каждого файла.
+
+   Copyright (c) 2025-2026 Nick Shirokov
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+2. Статические анализаторы BSL в состав репозитория НЕ входят: bsl-analyzer
+   (https://github.com/itrous/bsl-analyzer, LGPL-3.0-or-later) и
+   bsl-language-server (https://github.com/1c-syntax/bsl-language-server,
+   LGPL-3.0) скачиваются с релизов своих авторов и запускаются как внешние
+   процессы. Условия их лицензий действуют на сами эти программы.
+
+3. Материалы v8std.ru (https://github.com/zeegin/v8std, CC0 1.0) в репозитории
+   не хранятся и запрашиваются во время работы через MCP.

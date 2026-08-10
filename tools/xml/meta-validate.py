@@ -1,5 +1,7 @@
 # meta-validate v1.10 — Validate 1C metadata object structure (Python port) (+корневой <Type>: скаляр без структуры = ошибка)
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
+# Copyright (c) 2025-2026 Nick Shirokov. Licensed under the MIT License.
+# Адаптировано для плагина 1c-quality-gate; изменения (c) 2026 romandredan, MIT.
 import argparse
 import os
 import re

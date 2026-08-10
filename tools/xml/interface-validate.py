@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # interface-validate v1.1 — Validate 1C CommandInterface.xml structure
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
+# Copyright (c) 2025-2026 Nick Shirokov. Licensed under the MIT License.
+# Адаптировано для плагина 1c-quality-gate; изменения (c) 2026 romandredan, MIT.
 """Validates CommandInterface.xml sections, command references, order, duplicates."""
 import sys, os, argparse, re
 from lxml import etree

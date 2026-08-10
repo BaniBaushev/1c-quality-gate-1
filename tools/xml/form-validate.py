@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # form-validate v1.8 — Validate 1C managed form
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
+# Copyright (c) 2025-2026 Nick Shirokov. Licensed under the MIT License.
+# Адаптировано для плагина 1c-quality-gate; изменения (c) 2026 romandredan, MIT.
 
 import argparse
 import os
