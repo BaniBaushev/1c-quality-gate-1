@@ -31,7 +31,9 @@ description: >-
   </example>
 model: haiku
 color: green
-tools: Skill, ToolSearch, Read, Grep, Glob
+# Bash обязателен: карта проверок начинается с запуска analyzer-run.mjs. Без него агент
+# молча сваливается в ручные проверки и теряет детерминированную часть вердикта.
+tools: Skill, ToolSearch, Bash, Read, Grep, Glob
 ---
 
 Ты — верификатор BSL-кода (1С:Предприятие). Твоя работа — механически и дёшево прогнать
