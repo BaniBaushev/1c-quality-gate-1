@@ -28,14 +28,32 @@
 ```
 [qg scope: volume=C2, files=3, loc=+87/-12, archetypes=[query,transaction],
            complexity=[nesting:4], driver=archetype:transaction,
-           resolved=code:L2|arch:skip|xml:n/a|hygiene:full]
+           resolved=code:L2|arch:skip|xml:n/a|hygiene:full,
+           config=custom:volume+sentinel]
 ```
 
-Обязательные поля: `volume`, `files`, `archetypes`, `driver`, `resolved`.
+Обязательные поля: `volume`, `files`, `archetypes`, `driver`, `resolved`, `config`.
 
 `volume` — один из `C0`, `C1`, `C2`, `C3`. `archetypes` — список сработавших меток, либо
 `[none]`, если ни одна не сработала (пустой список запрещён — он неотличим от «не считали»).
 `driver` — что подняло глубину: `volume`, `archetype:<имя>` или `complexity:<метрика>`.
+
+`config` — настройка проекта, применённая к этому прогону: `default`, если все пороги
+умолчаний, либо `custom:<секция>[+<секция>]` с перечнем переопределённых секций
+(`analyzer`, `volume`, `complexity`, `archetypes`, `sentinel`). **Строку печатает
+`node "$QG/tools/config.mjs" show`** — её переносят в запись, а не сочиняют: сочинённая
+отметка ничего не доказывает.
+
+Без неё «C1» из одного отчёта не означает того же, что «C1» из другого, а прогон, не
+заглянувший в настройку проекта, неотличим от прогона, который её учёл. Снятие гейта такую
+запись не пропустит; при обычном линте отсутствие поля — предупреждение, чтобы отчёты,
+собранные до его появления, оставались читаемыми.
+
+**Поле сверяется с фактической настройкой проекта, а не принимается на слово.** Приписать
+`config=default` там, где пороги задраны, не сложнее, чем забыть посмотреть настройку, — и
+последствия те же. Расхождение блокирует снятие гейта и называет оба значения. Отсюда же
+следует: если настройка изменилась после прогона, след устарел вместе с профилем и прогон
+надо повторить.
 
 ### `applied` — проверка выполнена
 
@@ -161,7 +179,7 @@ node tools/evidence-validator.mjs <файл> --gate   # строгий, для �
 ```markdown
 ## quality evidence
 
-[qg scope: volume=C1, files=1, loc=+18/-3, archetypes=[query], complexity=[none], driver=archetype:query, resolved=code:L2|arch:skip|xml:n/a|hygiene:full]
+[qg scope: volume=C1, files=1, loc=+18/-3, archetypes=[query], complexity=[none], driver=archetype:query, resolved=code:L2|arch:skip|xml:n/a|hygiene:full, config=default]
 [qg sentinel: target=v8std, id=std454, status=found]
 [qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.66]
 [qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM,qg:HYG-DASH], verdict=clean]

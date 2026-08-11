@@ -153,6 +153,31 @@ export function readConfig(root = projectRoot(), env = process.env) {
   return resolve(root, env).values;
 }
 
+/** Секции, где хоть одно значение пришло не из умолчаний. */
+export function overriddenSections(state) {
+  return Object.keys(DEFAULTS).filter((section) =>
+    Object.values(state.sources[section] || {}).some((src) => src !== 'умолчание')
+  );
+}
+
+/**
+ * Поле записи `scope` следа прогона.
+ *
+ * Печатается инструментом, а не сочиняется по памяти: прогон, не заглянувший в настройку,
+ * оставлял след, неотличимый от прогона, который её учёл. Пороги при этом у проектов разные,
+ * и «C1» в одном отчёте означает не то же, что «C1» в другом.
+ */
+export function evidenceField(state) {
+  const changed = overriddenSections(state);
+  return `config=${evidenceValue(state)}`;
+}
+
+/** Только значение поля — для сверки заявленного в следе с фактическим. */
+export function evidenceValue(state) {
+  const changed = overriddenSections(state);
+  return changed.length ? `custom:${changed.join('+')}` : 'default';
+}
+
 /**
  * Содержимое создаваемого файла.
  *
@@ -243,7 +268,7 @@ function formatValue(v) {
 function cmdShow(root, json) {
   const state = resolve(root);
   if (json) {
-    process.stdout.write(JSON.stringify(state, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ ...state, evidence: evidenceField(state) }, null, 2) + '\n');
     return state.broken ? 1 : 0;
   }
 
@@ -271,6 +296,7 @@ function cmdShow(root, json) {
       `\nНеизвестные ключи (не применяются, проверьте написание): ${state.unknown.join(', ')}\n`
     );
   }
+  process.stdout.write(`\nВ запись scope следа прогона: ${evidenceField(state)}\n`);
   return state.broken ? 1 : 0;
 }
 

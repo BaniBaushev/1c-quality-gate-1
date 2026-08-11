@@ -247,6 +247,17 @@ if (python.ok) {
 section('Валидатор следа — отвергает недобросовестный прогон');
 
 const ev = (name) => join(FIXTURES, 'evidence', name);
+
+// Отметка о настройке в следе сверяется с фактической настройкой проекта, поэтому фикстуре с
+// переопределёнными порогами нужен проект, к которому она относится.
+const CUSTOM_PROJ = join(WORK, 'ev-custom-proj');
+mkdirSync(CUSTOM_PROJ, { recursive: true });
+writeFileSync(
+  join(CUSTOM_PROJ, '.1c-quality-gate.json'),
+  JSON.stringify({ volume: { c1MaxLines: 15 }, sentinel: { id: 'std783' } }),
+  'utf8'
+);
+const customProj = { env: { CLAUDE_PROJECT_DIR: CUSTOM_PROJ } };
 {
   const r = run('tools/evidence-validator.mjs', [ev('valid.md'), '--gate']);
   check('полный корректный след принимается', r.code === 0, r.out.trim().slice(0, 120));
@@ -269,8 +280,44 @@ const ev = (name) => join(FIXTURES, 'evidence', name);
   check('незакрытая запись — отклонена', r.out.includes('не разобрана'));
 }
 {
-  const r = run('tools/evidence-validator.mjs', [ev('multiline-scope.md'), '--gate']);
+  const r = run('tools/evidence-validator.mjs', [ev('multiline-scope.md'), '--gate'], customProj);
   check('многострочная запись scope разбирается', r.code === 0, r.out.trim().slice(0, 120));
+}
+
+// Отметка о настройке проекта. Без неё «C1» из одного отчёта не означает того же, что «C1»
+// из другого, а прогон, не заглянувший в настройку, неотличим от учтившего её.
+{
+  const body =
+    '[qg sentinel: target=v8std, id=std454, status=found]\n' +
+    '[qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM], verdict=clean]\n' +
+    '[qg not_verified: dimension=compilation, reason=no_platform]\n';
+  const scoped = (extra) =>
+    `## quality evidence\n\n[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1${extra}]\n`;
+
+  const without = writeBytes('ev-no-config.md', scoped('') + body);
+  const gated = run('tools/evidence-validator.mjs', [without, '--gate']);
+  check('снятие гейта без отметки о настройке запрещено', gated.code === 2 && gated.out.includes('config'), gated.out.trim().slice(0, 140));
+
+  // Отчёты, собранные до появления поля, читать и линтовать по-прежнему можно.
+  const linted = run('tools/evidence-validator.mjs', [without]);
+  check('в нестрогом режиме отсутствие отметки — предупреждение', linted.code === 1, linted.out.trim().slice(0, 140));
+
+  const bogus = writeBytes('ev-bad-config.md', scoped(', config=custom:вымысел') + body);
+  const rb = run('tools/evidence-validator.mjs', [bogus, '--gate']);
+  check('выдуманная секция настройки отвергается', rb.code === 2 && rb.out.includes('config='), rb.out.trim().slice(0, 140));
+
+  const good = writeBytes('ev-custom-config.md', scoped(', config=custom:volume+sentinel') + body);
+  const rg = run('tools/evidence-validator.mjs', [good, '--gate'], customProj);
+  check('перечень переопределённых секций принимается', rg.code === 0, rg.out.trim().slice(0, 140));
+
+  // Отметка не принимается на слово. Приписать «пороги умолчаний» в проекте, где они задраны,
+  // не сложнее, чем забыть посмотреть настройку, — и последствия те же.
+  const lie = run('tools/evidence-validator.mjs', [ev('valid.md'), '--gate'], customProj);
+  check('заявленный default в проекте с переопределениями отвергнут', lie.code === 2 && lie.out.includes('расходится'), lie.out.trim().slice(0, 160));
+
+  const stale = writeBytes('ev-stale-config.md', scoped(', config=custom:volume') + body);
+  const rs = run('tools/evidence-validator.mjs', [stale, '--gate'], customProj);
+  check('усечённый перечень секций отвергнут', rs.code === 2 && rs.out.includes('расходится'), rs.out.trim().slice(0, 160));
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +545,26 @@ section('Проектная настройка — создание, разре�
   // прогон бывает зелёным локально и красным в CI.
   check('контур анализатора читает общий разрешитель', analyzerCfg.readAnalyzerConfig(proj, {}).required === true);
 
+  // --- отметка о настройке в следе прогона ----------------------------------
+  // Строку печатает инструмент, а валидатор её принимает. Разъедься эти два места — поле
+  // начнут сочинять по памяти, ровно как раньше сочиняли пороги.
+  write({ volume: { c1MaxLines: 15 }, sentinel: { id: 'std783' } });
+  const overridden = config.resolve(proj, {});
+  check('строка следа перечисляет переопределённые секции', config.evidenceField(overridden) === 'config=custom:volume+sentinel', config.evidenceField(overridden));
+  check('без переопределений строка следа — default', config.evidenceField(config.resolve(join(WORK, 'нет-такого-проекта'), {})) === 'config=default');
+  const showEv = run('tools/config.mjs', ['show'], { env: { CLAUDE_PROJECT_DIR: proj } });
+  check('show печатает готовую строку следа', showEv.out.includes('config=custom:volume+sentinel'), showEv.out.trim().slice(-140));
+
+  const pasted = writeBytes(
+    'ev-from-config-tool.md',
+    `## quality evidence\n\n[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1, ${config.evidenceField(overridden)}]\n` +
+      '[qg sentinel: target=v8std, id=std454, status=found]\n' +
+      '[qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM], verdict=clean]\n' +
+      '[qg not_verified: dimension=compilation, reason=no_platform]\n'
+  );
+  const pastedR = run('tools/evidence-validator.mjs', [pasted, '--gate'], { env: { CLAUDE_PROJECT_DIR: proj } });
+  check('напечатанная инструментом строка проходит валидатор', pastedR.code === 0, pastedR.out.trim().slice(0, 140));
+
   // --- создание при взводе гейта --------------------------------------------
   const armProj = join(WORK, 'cfg-arm');
   rmSync(armProj, { recursive: true, force: true });
@@ -561,6 +628,8 @@ const mustContain = [
   ['skills/quality-gate/SKILL.md', 'archetypes.custom', 'архетипы проекта участвуют в выборе глубины'],
   ['skills/quality-gate/SKILL.md', 'volume.c1MaxLines', 'порог объёма назван ключом настройки'],
   ['skills/quality-gate/SKILL.md', 'complexity.maxNesting', 'порог сложности назван ключом настройки'],
+  ['skills/quality-gate/SKILL.md', 'config=', 'отметка о настройке переносится в след'],
+  ['skills/quality-gate/references/evidence-format.md', 'custom:volume+sentinel', 'формат отметки о настройке описан'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
@@ -760,7 +829,7 @@ section('Установка анализатора — манифест и со�
 section('Часовой проверяется по целям, а не «хотя бы один живой»');
 
 {
-  const head = '## quality evidence\n\n[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1]\n';
+  const head = '## quality evidence\n\n[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1, config=default]\n';
   const clean = '[qg applied: layer=code, scope=static-analysis, ids=[bslls:*], verdict=clean]\n';
   const notVerified = '[qg not_verified: dimension=compilation, reason=no_platform]\n';
   const v8 = '[qg sentinel: target=v8std, id=std454, status=found]\n';

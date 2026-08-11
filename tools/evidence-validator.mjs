@@ -18,6 +18,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { resolve as resolveConfig, evidenceValue } from './config.mjs';
 
 export const SECTION = '## quality evidence';
 
@@ -41,6 +42,12 @@ const REQUIRED = {
 // составные имена, которые сам же плагин и порождает.
 const ID_PATTERN = /^(std\d{3,4}|bslls:(\*|[A-Za-z][\w-]*)|acc:\d{3,4}|v8cs:[\w-]+|qg:[A-Z][A-Z0-9]*(-[A-Z0-9]+)+|patterns:[\w:-]+)$/;
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// Настройка, применённая к прогону: `default` либо `custom:<секция>[+<секция>]`. Печатает её
+// `tools/config.mjs show`, откуда она и переносится в след. Список секций закрытый: выдуманное
+// имя означает, что строку сочинили, а не скопировали из вывода инструмента.
+const CONFIG_SECTIONS = ['analyzer', 'volume', 'complexity', 'archetypes', 'sentinel'];
+const CONFIG_PATTERN = new RegExp(`^(default|custom:(${CONFIG_SECTIONS.join('|')})(\\+(${CONFIG_SECTIONS.join('|')}))*)$`);
 
 /**
  * Внешний источник, которым подтверждается идентификатор.
@@ -171,6 +178,19 @@ export function validate(text, { gate = false } = {}) {
     if (rec.type === 'scope' && rec.fields.volume && !VOLUMES.includes(rec.fields.volume)) {
       add('error', rec.line, `volume="${rec.fields.volume}" вне списка ${VOLUMES.join('|')}`);
     }
+    if (rec.type === 'scope' && rec.fields.config && !CONFIG_PATTERN.test(String(rec.fields.config))) {
+      add(
+        'error',
+        rec.line,
+        `config="${rec.fields.config}": ожидается default либо custom:<секция>[+<секция>] ` +
+          `(${CONFIG_SECTIONS.join(', ')}) — строку печатает config.mjs show`
+      );
+    }
+    // В нестрогом режиме отсутствие поля — предупреждение: отчёты, собранные до появления
+    // этого поля, читать и линтовать по-прежнему можно. Снятие гейта его требует.
+    if (rec.type === 'scope' && !gate && isEmpty(rec.fields.config)) {
+      add('warn', rec.line, 'в записи scope нет поля config: неизвестно, по чьим порогам выбрана глубина');
+    }
     if (rec.type === 'applied') {
       const v = rec.fields.verdict;
       if (v && v !== 'clean' && !/^violation:.+/.test(v)) {
@@ -201,6 +221,38 @@ export function validate(text, { gate = false } = {}) {
   const scopes = records.filter((r) => r.type === 'scope');
   if (scopes.length === 0) add('error', 0, 'нет записи scope: неизвестно, как выбиралась глубина проверки');
   if (scopes.length > 1) add('error', scopes[1].line, 'записей scope больше одной: профиль изменения определяется один раз');
+
+  // Настройка проекта меняет пороги, по которым выбран класс. Без этой отметки «C1» в одном
+  // отчёте не означает того же, что «C1» в другом, а прогон, не заглянувший в настройку,
+  // неотличим от прогона, который её учёл.
+  //
+  // Отметка не принимается на слово, а СВЕРЯЕТСЯ с фактической настройкой проекта. Заявление,
+  // которое никто не проверяет, — это ровно та подпись под непрогнанной проверкой, против
+  // которой написан весь формат: приписать `config=default` в проекте с задранными порогами
+  // не сложнее, чем забыть посмотреть настройку.
+  let actual = null;
+  try {
+    actual = evidenceValue(resolveConfig());
+  } catch {
+    /* настройка не читается — сверять не с чем, ограничиваемся требованием поля */
+  }
+  for (const s of scopes) {
+    if (isEmpty(s.fields.config)) {
+      add(
+        'error',
+        s.line,
+        'в записи scope нет поля config: неизвестно, по чьим порогам выбрана глубина — ' +
+          'строку печатает `node tools/config.mjs show`'
+      );
+    } else if (actual && String(s.fields.config) !== actual) {
+      add(
+        'error',
+        s.line,
+        `config="${s.fields.config}" расходится с настройкой проекта (сейчас "${actual}"): ` +
+          'след относится к другим порогам — перепроверь профиль и перенеси строку из `config.mjs show`'
+      );
+    }
+  }
 
   const checks = records.filter((r) => r.type === 'applied' || r.type === 'skipped');
   if (checks.length === 0) add('error', 0, 'нет ни одной записи applied/skipped: ни один контур не отчитался');
