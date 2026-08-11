@@ -648,6 +648,20 @@ const mustContain = [
   ['skills/bsl-code-review/references/checklist-code.md', '#std661', 'блокирующее чтение остатков в начале транзакции'],
   ['skills/bsl-code-review/references/checklist-code.md', '#std450', 'порядок записи движений'],
   ['skills/bsl-code-review/references/checklist-code.md', '#std748', 'таймаут при обращении к внешнему ресурсу'],
+  // #std415: РАЗРЕШЕННЫЕ отбрасывает недоступные строки молча. В расчётном или проводящем
+  // запросе это меняет результат в зависимости от прав пользователя, а справка контура до
+  // этой правки советовала применять ключевое слово по умолчанию — ровно то, что запрещает
+  // стандарт, на который контур же и ссылается.
+  ['skills/bsl-code-review/references/bsl-query-optimization.md', '#std415', 'ограничение на РАЗРЕШЕННЫЕ разобрано'],
+  ['skills/bsl-code-review/references/bsl-query-optimization.md', 'Контр-сигнал', 'у ограничения на РАЗРЕШЕННЫЕ есть законная форма'],
+  ['skills/bsl-code-review/references/checklist-code.md', '#std415', 'РАЗРЕШЕННЫЕ в расчётном запросе — пункт чеклиста'],
+  ['skills/bsl-code-review/references/bsl-query-reference.md', '#std415', 'справочник языка называет ограничение применимости'],
+  // Имя реквизита формы в области видимости модуля: присваивание пишет реквизит, а не
+  // заводит локальную переменную. Ошибка молчит и всплывает в другом методе, поэтому важны
+  // обе половины — механизм и контр-сигнал про методы без контекста формы.
+  ['skills/bsl-code-review/references/bsl-form-module-rules.md', 'Локальная переменная с именем реквизита формы', 'коллизия имени с реквизитом формы разобрана'],
+  ['skills/bsl-code-review/references/bsl-form-module-rules.md', '&НаКлиентеНаСервереБезКонтекста`)', 'методы без контекста формы названы контр-сигналом'],
+  ['skills/bsl-code-review/references/bsl-form-module-rules.md', 'непроверенный', 'без состава реквизитов признак не выпускается'],
   ['skills/bsl-code-review/references/ai-antipatterns.md', 'ЗаполнитьЗначенияСвойств(Приёмник', 'копия структуры не делается заполнением свойств'],
   // Настройка, которую никто не читает, неотличима от «правило не сработало»: у каждой оси
   // должно быть место в навыке, где сказано, откуда берётся её порог.
@@ -662,6 +676,15 @@ const mustContain = [
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
   check(`правило на месте: ${label}`, existsSync(p) && readFileSync(p, 'utf8').includes(needle));
+}
+
+// Регрессия, которая в репозитории уже была: справочник языка подавал РАЗРЕШЕННЫЕ как выбор
+// по умолчанию. Проверяем не наличие правильной строки, а отсутствие неправильной — иначе
+// совет вернётся рядом с оговоркой и снова разойдётся с #std415.
+{
+  const ref = readFileSync(join(ROOT, 'skills/bsl-code-review/references/bsl-query-reference.md'), 'utf8');
+  const badRow = ref.split('\n').find((l) => l.includes('РАЗРЕШЕННЫЕ') && /по умолчанию/.test(l));
+  check('РАЗРЕШЕННЫЕ не подаётся как выбор по умолчанию', !badRow, badRow || '');
 }
 
 // у каждого признака архитектуры обязан быть контр-сигнал
