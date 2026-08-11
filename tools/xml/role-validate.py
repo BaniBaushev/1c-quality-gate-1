@@ -130,6 +130,14 @@ KNOWN_RIGHTS = {
 NESTED_RIGHTS = ['View', 'Edit']
 CHANNEL_RIGHTS = ['Use']
 COMMAND_RIGHTS = ['View']
+# Service call points are addressed by nested path (HTTPService.<name>.URLTemplate.<t>.Method.<m>,
+# WebService.<name>.Operation.<op>) and carry Use, not the View/Edit of nested data objects.
+ENDPOINT_RIGHTS = ['Use']
+
+# Types that have no object rights at all: enum value availability follows from rights on the
+# objects using it, and scheduled jobs have no configurable rights. An empty rights set for
+# these is the platform model, not an omission. See references/role-rights-model.md.
+RIGHTLESS_TYPES = ['Enum', 'ScheduledJob']
 
 
 def get_object_type(name):
@@ -331,7 +339,10 @@ def main():
 
         # Check object type is known
         if not is_nested and object_type not in KNOWN_RIGHTS:
-            report_warn(f"{obj_name}: unknown object type '{object_type}'")
+            if object_type in RIGHTLESS_TYPES:
+                report_warn(f"{obj_name}: type '{object_type}' has no object rights; the entry itself is the defect")
+            else:
+                report_warn(f"{obj_name}: unknown object type '{object_type}'")
 
         # Check rights
         for child in obj:
@@ -382,6 +393,9 @@ def main():
                 elif '.IntegrationServiceChannel.' in obj_name:
                     if r_name not in CHANNEL_RIGHTS:
                         report_warn(f"{obj_name}: '{r_name}' not valid for channels (only: Use)")
+                elif '.Method.' in obj_name or '.Operation.' in obj_name:
+                    if r_name not in ENDPOINT_RIGHTS:
+                        report_warn(f"{obj_name}: '{r_name}' not valid for service endpoints (only: Use)")
                 else:
                     if r_name not in NESTED_RIGHTS:
                         report_warn(f"{obj_name}: '{r_name}' not valid for nested objects (only: View, Edit)")

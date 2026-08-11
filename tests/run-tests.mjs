@@ -241,6 +241,20 @@ if (python.ok) {
   const counts = outs.map((o) => (o.match(/\((\d+) checks\)/) || [])[1]);
   check('все три формы пути к роли дают один результат', new Set(counts).size === 1 && counts[0], counts.join(' / '));
   check('роль признана валидной', outs.every((o) => o.includes('Validation OK')), outs[0].trim().slice(0, 100));
+
+  // Право точки вызова сервиса — Use. Валидатор разбирал такой путь как вложенный реквизит и
+  // требовал View/Edit, то есть выдавал находку на единственно верной форме записи прав.
+  // Модель прав по типам объектов — skills/xml-structure-review/references/role-rights-model.md.
+  const endpoint = runPy(pyTool('role'), ['-Path', join(FIXTURES, 'xml', 'role', 'QG_РольТочекСервиса')]);
+  check('право Use у метода сервиса и операции веб-сервиса проходит чисто',
+    endpoint.code === 0 && /Validation OK/.test(endpoint.out), endpoint.out.trim().slice(0, 140));
+
+  // У перечисления объектных прав не существует. Дефект — сама запись в роли, а не «неизвестный
+  // тип»: вторая формулировка читается как пробел валидатора и провоцирует искать способ выдать
+  // право, которого нет в модели прав платформы.
+  const rightless = runPy(pyTool('role'), ['-Path', join(FIXTURES, 'xml', 'role', 'QG_РольПравПеречисления')]);
+  check('право на перечисление названо несуществующим, а не неизвестным типом',
+    rightless.out.includes('has no object rights'), rightless.out.trim().slice(0, 140));
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +635,20 @@ const mustContain = [
   ['skills/bsl-code-review/SKILL.md', 'НЕ РАЗОБРАНО', 'неразобранные файлы называются явно'],
   ['skills/xml-structure-review/SKILL.md', '-Path', 'универсальное имя параметра валидаторов XML'],
   ['skills/xml-structure-review/SKILL.md', 'reason=lxml_unavailable', 'падение валидатора без lxml — не находка в XML'],
+  // Контр-сигналы прав и семантика заимствования: без них контур выпускает находки на файлах,
+  // где «дефект» — свойство модели прав платформы, а не упущение автора.
+  ['skills/xml-structure-review/references/role-rights-model.md', 'URLTemplate', 'право Use выдаётся точке вызова сервиса'],
+  ['skills/xml-structure-review/references/role-rights-model.md', 'ScheduledJob', 'типы без объектных прав названы'],
+  ['skills/xml-structure-review/references/cfe-object-belonging.md', 'ObjectBelonging', 'принадлежность элемента расширения задана отсутствием тега'],
+  ['skills/xml-structure-review/SKILL.md', 'role-rights-model.md', 'контур ссылается на модель прав'],
+  ['skills/xml-structure-review/SKILL.md', 'cfe-object-belonging.md', 'контур ссылается на семантику заимствования'],
+  // Дефект, проходящий валидацию: «OK» валидатора здесь не вердикт о работоспособности.
+  ['skills/xml-structure-review/SKILL.md', 'AutoCommandBar', 'зависание загрузки на командной панели таблицы'],
+  ['skills/bsl-code-review/references/checklist-code.md', '#std659', 'избыточные блокировки'],
+  ['skills/bsl-code-review/references/checklist-code.md', '#std661', 'блокирующее чтение остатков в начале транзакции'],
+  ['skills/bsl-code-review/references/checklist-code.md', '#std450', 'порядок записи движений'],
+  ['skills/bsl-code-review/references/checklist-code.md', '#std748', 'таймаут при обращении к внешнему ресурсу'],
+  ['skills/bsl-code-review/references/ai-antipatterns.md', 'ЗаполнитьЗначенияСвойств(Приёмник', 'копия структуры не делается заполнением свойств'],
   // Настройка, которую никто не читает, неотличима от «правило не сработало»: у каждой оси
   // должно быть место в навыке, где сказано, откуда берётся её порог.
   ['skills/quality-gate/SKILL.md', 'tools/config.mjs" show', 'пороги берутся из проектной настройки, а не по памяти'],
