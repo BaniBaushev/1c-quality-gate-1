@@ -25,7 +25,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, resolve, isAbsolute } from 'node:path';
 import { projectRoot } from './project-root.mjs';
 
 const STATE_DIR = ['.claude', '.state'];
@@ -39,6 +39,28 @@ export function journalPath(root = projectRoot()) {
 }
 
 /**
+ * Приводит путь к той же форме, в какой состав правки хранит гейт: относительно корня
+ * проекта, слэши вперёд, нижний регистр.
+ *
+ * Регистр гасится намеренно: на Windows один и тот же файл приходит то как `src/CF/...`,
+ * то как `src/cf/...`, и сверка покрытия по-разному написанных путей давала бы находку на
+ * проверенном файле — ложный отказ, который дороже пропуска.
+ */
+export function normalizePath(p, root = projectRoot()) {
+  const s = String(p);
+  const rel = isAbsolute(s) ? relative(resolve(root), resolve(s)) : s;
+  return rel.split('\\').join('/').replace(/^\.\//, '').toLowerCase();
+}
+
+/** Список путей либо null. Число (прежний формат поля) значит «пути неизвестны». */
+function normalizePaths(files, root) {
+  if (files === null || files === undefined) return null;
+  if (!Array.isArray(files)) return null;
+  const out = [...new Set(files.map((f) => normalizePath(f, root)).filter(Boolean))];
+  return out.length ? out : null;
+}
+
+/**
  * Записывает факт прогона.
  *
  * Пишется САМИМ инструментом в момент печати следа — иначе запись доказывала бы лишь то,
@@ -48,12 +70,17 @@ export function journalPath(root = projectRoot()) {
  */
 export function recordRun({ scope, tool, verdict = null, files = null, unanalyzed = null, root = projectRoot() }) {
   if (!scope || !tool) return null;
+  const paths = normalizePaths(files, root);
   const entry = {
     ts: new Date().toISOString(),
     scope,
     tool,
     ...(verdict ? { verdict } : {}),
-    ...(files === null ? {} : { files }),
+    // Пути, а не количество. Число отвечало на вопрос «сколько-то файлов проверено», из
+    // которого не следует, что проверены ИМЕННО изменённые: прогон по одному файлу закрывал
+    // заявление о десяти. С путями валидатор сверяет покрытие с составом правки, известным
+    // из состояния гейта.
+    ...(paths === null ? {} : { files: paths }),
     // Сколько файлов инструмент НЕ проверил. Живёт в журнале, а не только в отчёте, потому
     // что отчёт пишет модель: заявление о полноте, взятое из проверяемого документа, ничего
     // не подтверждает.
@@ -108,4 +135,31 @@ export function scopesRun(root = projectRoot(), since = null) {
     out.add(rec.scope);
   }
   return out;
+}
+
+/**
+ * Файлы, которые инструмент этой проверки видел, — объединение по всем годным записям.
+ *
+ * Объединение, а не последняя запись: контур законно гоняет инструмент несколькими вызовами
+ * (по файлу, по группе), и требовать один вызов на всё значило бы предписывать способ работы
+ * вместо результата.
+ *
+ * Записи без путей (прежний формат, где хранилось количество) возвращают `null` — «видел
+ * что-то, но что именно, неизвестно». Отличать это от «не видел ничего» обязательно: иначе
+ * журнал, созданный прошлой версией, читался бы как доказательство пропуска.
+ */
+export function coveredFiles(root = projectRoot(), scope, since = null) {
+  const bound = since ? String(since) : null;
+  const files = new Set();
+  let any = false;
+  let unknown = false;
+  for (const rec of readJournal(root)) {
+    if (rec.scope !== scope) continue;
+    if (bound && String(rec.ts || '') < bound) continue;
+    any = true;
+    if (Array.isArray(rec.files)) for (const f of rec.files) files.add(String(f).toLowerCase());
+    else unknown = true;
+  }
+  if (!any) return { ran: false, files: new Set(), unknown: false };
+  return { ran: true, files, unknown };
 }

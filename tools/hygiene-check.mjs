@@ -163,13 +163,13 @@ const EVIDENCE_IDS = {
  * набором. Перечислять пять идентификаторов в чистом прогоне уместно: их пять, а не полторы
  * сотни, и видно, что именно проверено.
  */
-function evidenceBlock(findings, filesCount) {
+function evidenceBlock(findings, files) {
   const hit = [...new Set(findings.map((f) => EVIDENCE_IDS[f.rule]).filter(Boolean))].sort();
   recordRun({
     scope: 'file-encoding',
     tool: 'tools/hygiene-check.mjs',
     verdict: hit.length ? 'violation' : 'clean',
-    files: filesCount,
+    files,
   });
   if (hit.length === 0) {
     const all = Object.values(EVIDENCE_IDS).sort().join(',');
@@ -194,7 +194,7 @@ function main(argv) {
   const errors = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'error').length, 0);
   const warns = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'warn').length, 0);
 
-  const evidence = evidenceBlock(report.flatMap((r) => r.findings), files.length);
+  const evidence = evidenceBlock(report.flatMap((r) => r.findings), files);
 
   if (asJson) {
     process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');

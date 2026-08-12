@@ -21,7 +21,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolve as resolveConfig, evidenceValue } from './config.mjs';
 import { SCOPES, TOOL_BACKED, RENAMED, isKnownScope } from './evidence-scopes.mjs';
-import { readJournal } from './run-journal.mjs';
+import { readJournal, coveredFiles } from './run-journal.mjs';
 import { projectRoot } from './project-root.mjs';
 
 export const SECTION = '## quality evidence';
@@ -246,7 +246,7 @@ function isEmpty(value) {
  * проверка вырождается в «отметка о прогоне вообще есть». Требовать больше значило бы
  * блокировать добросовестную работу по чужой активности.
  */
-function lastGateActivity(root, sessionId = null) {
+function ownSession(root, sessionId = null) {
   const file = join(root, '.claude', '.state', 'qg-pending.json');
   if (!existsSync(file)) return null;
   try {
@@ -255,11 +255,29 @@ function lastGateActivity(root, sessionId = null) {
     const ids = Object.keys(sessions);
     const own = sessionId && ids.includes(sessionId) ? sessionId : ids.length === 1 ? ids[0] : null;
     if (!own) return null;
-    const s = sessions[own];
-    return String(s?.updatedAt || s?.armedAt || '') || null;
+    const s = sessions[own] || {};
+    return {
+      since: String(s.updatedAt || s.armedAt || '') || null,
+      files: Object.keys(s.files || {}).map((p) => p.split('\\').join('/').toLowerCase()),
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * Покрыт ли файл прогоном инструмента.
+ *
+ * Совпадение по префиксу каталога обязательно: валидаторам XML путь дают и файлом
+ * (`.../Ext/Rights.xml`), и каталогом объекта (`Roles/QG_Роль`), а состав правки хранит
+ * файлы. Без этого правки роли давали бы отказ на честно прогнанной проверке.
+ */
+function isCovered(file, covered) {
+  if (covered.has(file)) return true;
+  for (const c of covered) {
+    if (c && file.startsWith(c.endsWith('/') ? c : `${c}/`)) return true;
+  }
+  return false;
 }
 
 export function validate(text, { gate = false, root = null, session = null } = {}) {
@@ -497,25 +515,65 @@ export function validate(text, { gate = false, root = null, session = null } = {
   // не защищает от записи, дописанной в журнал вручную. Независимого источника, из которого
   // такое можно перевывести, у плагина нет. Это обнаружение молчания, и только.
   const journal = readJournal(projectDir);
-  const since = lastGateActivity(projectDir, session);
+  const own = ownSession(projectDir, session);
+  const since = own?.since || null;
   const fresh = journal.filter((r) => !since || String(r.ts || '') >= since);
   const runScopes = new Set(fresh.map((r) => r.scope));
 
-  for (const rec of applied) {
+  // `skipped` с причиной `not_applicable` — тоже утверждение о работе инструмента: кто-то
+  // посмотрел файлы и заключил, что правило к ним не относится. Инструменты такую отметку
+  // ставят; без требования она была бы дырой ровно того же вида, что и вердикт без прогона,
+  // только шире — ею закрывается любая проверка. Прочие причины (инструмент недоступен,
+  // контур не установлен) отметки не требуют: писать её некому.
+  const claimsRun = [
+    ...applied,
+    ...records.filter((r) => r.type === 'skipped' && String(r.fields.reason || '') === 'not_applicable'),
+  ];
+
+  for (const rec of claimsRun) {
     const scope = String(rec.fields.scope || '');
     const tool = TOOL_BACKED[scope];
     if (!tool) continue;
-    if (runScopes.has(scope)) continue;
-    const ranEarlier = journal.some((r) => r.scope === scope);
-    add(
-      'error',
-      rec.line,
-      ranEarlier
-        ? `проверка "${scope}" заявлена как выполненная, но последний прогон ${tool} старше ` +
-          'последней правки файлов: доказательство относится к прежнему состоянию — прогони заново'
-        : `проверка "${scope}" заявлена как выполненная, но ${tool} в этом прогоне не запускался. ` +
-          'Строку следа печатает сам инструмент — запусти его и перенеси вывод'
-    );
+    if (!runScopes.has(scope)) {
+      const ranEarlier = journal.some((r) => r.scope === scope);
+      add(
+        'error',
+        rec.line,
+        ranEarlier
+          ? `проверка "${scope}" заявлена как выполненная, но последний прогон ${tool} старше ` +
+            'последней правки файлов: доказательство относится к прежнему состоянию — прогони заново'
+          : `проверка "${scope}" заявлена как выполненная, но ${tool} в этом прогоне не запускался. ` +
+            'Строку следа печатает сам инструмент — запусти его и перенеси вывод'
+      );
+      continue;
+    }
+
+    // Прогон был — но по тем ли файлам? Без этой сверки инструмент, запущенный по одному
+    // файлу, закрывал заявление обо всех изменённых.
+    const meta = SCOPES[scope] || {};
+    if (meta.granularity !== 'files' || !own) continue;
+    const { files: covered, unknown } = coveredFiles(projectDir, scope, since);
+    // Записи прежнего формата хранили количество, а не пути: сверять нечем, и обвинять не в
+    // чем — прогон был. Молчать об этом тоже нельзя, отсюда предупреждение.
+    if (unknown) {
+      add('warn', rec.line, `в журнале нет путей для "${scope}": покрытие не сверено (запись прежнего формата)`);
+      continue;
+    }
+    const applicable = own.files.filter((f) => !meta.applies || meta.applies.some((ext) => f.endsWith(ext)));
+    const missing = applicable.filter((f) => !isCovered(f, covered));
+    if (missing.length) {
+      // Строгость — только там, где инструмент применим к каждому файлу своего расширения.
+      // У проверки структуры это не так: часть служебных XML выгрузки не проверяет никто, и
+      // ошибка на них была бы находкой за отсутствующий инструмент.
+      add(
+        meta.coverage === 'advisory' ? 'warn' : 'error',
+        rec.line,
+        `проверка "${scope}" заявлена по всей правке, но ${tool} не видел ${missing.length} из ` +
+          `${applicable.length} подходящих файлов: ${missing.slice(0, 3).join(', ')}` +
+          (missing.length > 3 ? ' и др.' : '') +
+          ' — прогони инструмент по всему составу правки'
+      );
+    }
   }
 
   // Инструмент сообщает в журнал, сколько изменённых файлов он НЕ смотрел. Если такие есть,

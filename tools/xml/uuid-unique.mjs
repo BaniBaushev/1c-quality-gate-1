@@ -136,7 +136,9 @@ function main(argv) {
     scope: 'uuid-uniqueness',
     tool: 'tools/xml/uuid-unique.mjs',
     verdict: duplicates.length ? 'violation' : 'clean',
-    files: scanned,
+    // Каталог, а не файлы: проверка смотрит выгрузку целиком, и покрытие по отдельным
+    // файлам для неё не определено (`granularity: 'tree'` в словаре проверок).
+    files: [root],
   });
 
   if (asJson) {

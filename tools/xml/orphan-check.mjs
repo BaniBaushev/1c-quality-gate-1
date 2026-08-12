@@ -179,7 +179,8 @@ function main(argv) {
     scope: 'registration-check',
     tool: 'tools/xml/orphan-check.mjs',
     verdict: hit ? 'violation' : 'clean',
-    files: found.length,
+    // Каталог выгрузки: сверка «диск ↔ состав» работает деревом, не отдельными файлами.
+    files: [root],
   });
 
   if (asJson) {

@@ -13,6 +13,7 @@
 """
 
 import json
+import sys
 import os
 from datetime import datetime, timezone
 
@@ -46,7 +47,7 @@ def project_root(start=None):
     return here
 
 
-def emit_evidence(tool, errors, files=1, scope="structure-validation", sign="qg:XML-STRUCT"):
+def emit_evidence(tool, errors, files=None, scope="structure-validation", sign="qg:XML-STRUCT"):
     """Печатает готовую запись следа и отмечает прогон в журнале.
 
     Общий хвост для всех валидаторов XML: контур переносит эту строку в отчёт дословно.
@@ -60,11 +61,49 @@ def emit_evidence(tool, errors, files=1, scope="structure-validation", sign="qg:
     как «инструмент не запускался» — ложная находка на добросовестно выполненной работе.
     """
     verdict = f"violation:{sign}" if errors else "clean"
-    record_run(scope, tool, verdict="violation" if errors else "clean", files=files)
+    record_run(scope, tool, verdict="violation" if errors else "clean", files=files or target_from_argv())
+
     print("")
     print("## quality evidence")
     print("")
     print(f"[qg applied: layer=xml, scope={scope}, ids=[{sign}], verdict={verdict}]")
+
+
+def target_from_argv(argv=None):
+    """Что проверял валидатор — берётся из аргументов запуска.
+
+    Так путь попадает в журнал без правки десяти скриптов, у каждого из которых своё имя
+    параметра (`-Path`, `-ObjectPath`, `-FormPath`, `-RightsPath`…) и своя внутренняя
+    переменная с разрешённым путём. Значение параметра — единственное общее место.
+
+    Возвращает список из одного пути либо пустой: путь может указывать и на файл, и на каталог
+    объекта — сверку покрытия это учитывает, засчитывая файлы внутри каталога.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    values = [a for a in args if not a.startswith("-")]
+    return values[-1:] if values else []
+
+
+def normalize_path(path, root):
+    """Путь в той же форме, в какой состав правки хранит гейт: от корня, слэши, нижний регистр.
+
+    Регистр гасится намеренно: на Windows один файл приходит то как `src/CF/...`, то как
+    `src/cf/...`, и сверка покрытия по-разному записанных путей дала бы находку на
+    проверенном файле.
+    """
+    text = str(path)
+    if os.path.isabs(text):
+        try:
+            text = os.path.relpath(text, root)
+        except ValueError:
+            # Разные диски на Windows: относительного пути не существует, оставляем как есть.
+            pass
+    text = text.replace("\\", "/")
+    # Именно префикс «./», а не набор символов: lstrip("./") съел бы и ведущие «../»,
+    # превратив путь за пределы проекта в путь внутри него.
+    if text.startswith("./"):
+        text = text[2:]
+    return text.lower()
 
 
 def record_run(scope, tool, verdict=None, files=None, root=None):
@@ -72,6 +111,7 @@ def record_run(scope, tool, verdict=None, files=None, root=None):
     if not scope or not tool:
         return None
 
+    base = root or project_root()
     entry = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z",
         "scope": scope,
@@ -79,11 +119,11 @@ def record_run(scope, tool, verdict=None, files=None, root=None):
     }
     if verdict:
         entry["verdict"] = verdict
-    if files is not None:
-        entry["files"] = files
+    if files:
+        paths = files if isinstance(files, (list, tuple)) else [files]
+        entry["files"] = sorted({normalize_path(p, base) for p in paths})
 
     try:
-        base = root or project_root()
         path = os.path.join(base, STATE_DIR, JOURNAL_FILE)
         os.makedirs(os.path.dirname(path), exist_ok=True)
 

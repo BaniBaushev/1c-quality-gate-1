@@ -421,13 +421,19 @@ const EVIDENCE_SCOPES = [
   { scope: 'query-top-order', id: 'qg:QRY-TOP-WITHOUT-ORDER' },
 ];
 
-function evidenceBlock(findings, queriesSeen, filesCount = null) {
+function evidenceBlock(findings, queriesSeen, files = []) {
   return EVIDENCE_SCOPES.map(({ scope, id }) => {
+    // Отмечается ЛЮБОЙ исход, включая «правило к этим файлам не относится». Инструмент,
+    // который видел файл и заключил, что запросов в нём нет, сделал работу; без отметки его
+    // `not_applicable` неотличим от той же строки, написанной вместо запуска.
+    const hit = queriesSeen && findings.some((f) => f.rule === id);
+    recordRun({
+      scope,
+      tool: 'tools/query-lint.mjs',
+      verdict: !queriesSeen ? 'not_applicable' : hit ? 'violation' : 'clean',
+      files,
+    });
     if (!queriesSeen) return `[qg skipped: layer=code, scope=${scope}, reason=not_applicable]`;
-    const hit = findings.some((f) => f.rule === id);
-    // Прогон отмечается в журнале: строку следа с тем же текстом можно написать руками,
-    // и без отметки «проверено инструментом» неотличимо от «прочитано глазами».
-    recordRun({ scope, tool: 'tools/query-lint.mjs', verdict: hit ? 'violation' : 'clean', files: filesCount });
     return `[qg applied: layer=code, scope=${scope}, ids=[${id}], verdict=${hit ? `violation:${id}` : 'clean'}]`;
   }).join('\n');
 }
@@ -446,7 +452,7 @@ function main(argv) {
   const errors = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'error').length, 0);
   const warns = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'warn').length, 0);
   const queriesSeen = files.some((f) => existsSync(f) && extractQueryLiterals(readFileSync(f, 'utf8')).length > 0);
-  const evidence = evidenceBlock(report.flatMap((r) => r.findings), queriesSeen, files.length);
+  const evidence = evidenceBlock(report.flatMap((r) => r.findings), queriesSeen, files);
 
   if (asJson) {
     process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');

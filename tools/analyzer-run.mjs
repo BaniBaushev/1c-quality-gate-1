@@ -692,7 +692,9 @@ async function main(argv) {
     scope: 'static-analysis',
     tool: 'tools/analyzer-run.mjs',
     verdict: findings.length ? 'violation' : 'clean',
-    files: args.changed.length,
+    // Пути, а не количество: покрытие сверяется с составом правки, а прогон по одному файлу
+    // из десяти иначе закрывал бы заявление обо всех десяти.
+    files: args.changed,
     unanalyzed: unanalyzed.length,
     root,
   });

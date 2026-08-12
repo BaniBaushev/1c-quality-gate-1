@@ -177,17 +177,20 @@ function checkFile(path) {
   return lintSource(readFileSync(path, 'utf8').replace(/^﻿/, ''), basename(path));
 }
 
-function evidenceBlock(findings, modulesSeen, filesCount = null) {
-  if (!modulesSeen) {
-    return '[qg skipped: layer=code, scope=transaction-nesting, reason=not_applicable]';
-  }
-  const hit = findings.some((f) => f.rule === 'qg:BSL-TXN-IN-HANDLER');
+function evidenceBlock(findings, modulesSeen, files = []) {
+  const hit = modulesSeen && findings.some((f) => f.rule === 'qg:BSL-TXN-IN-HANDLER');
+  // Отмечается любой исход. Проверка применима лишь к модулям объекта и набора записей, но
+  // «инструмент посмотрел файлы и не нашёл среди них таких» — это работа, а не её отсутствие;
+  // без отметки такой `not_applicable` неотличим от строки, написанной вместо запуска.
   recordRun({
     scope: 'transaction-nesting',
     tool: 'tools/bsl-lint.mjs',
-    verdict: hit ? 'violation' : 'clean',
-    files: filesCount,
+    verdict: !modulesSeen ? 'not_applicable' : hit ? 'violation' : 'clean',
+    files,
   });
+  if (!modulesSeen) {
+    return '[qg skipped: layer=code, scope=transaction-nesting, reason=not_applicable]';
+  }
   return (
     '[qg applied: layer=code, scope=transaction-nesting, ids=[qg:BSL-TXN-IN-HANDLER], ' +
     `verdict=${hit ? 'violation:qg:BSL-TXN-IN-HANDLER' : 'clean'}]`
@@ -213,7 +216,7 @@ function main(argv) {
   // неявной транзакции не имеют. Если таких файлов не было вовсе — это `not_applicable`,
   // а не «чисто»: молчание об области применения читается как проведённая проверка.
   const modulesSeen = files.some((f) => IMPLICIT_TRANSACTION_MODULES.has(basename(f)));
-  const evidence = evidenceBlock(findings, modulesSeen, files.length);
+  const evidence = evidenceBlock(findings, modulesSeen, files);
 
   if (asJson) {
     process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');

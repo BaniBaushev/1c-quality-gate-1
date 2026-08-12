@@ -19,28 +19,56 @@
  * выглядит заполненной, а закрывает пустоту.
  */
 
-/** @type {Record<string, { layer: string, tool: string|null, about: string }>} */
+/**
+ * Чем оперирует инструмент — вторая вещь, без которой сверка покрытия даёт ложные отказы.
+ *
+ * `files` — инструменту передают файлы, и в журнале лежат их пути: покрытие сверяется с
+ * составом правки. `tree` — инструменту передают КАТАЛОГ выгрузки (сверка «диск ↔ состав»,
+ * дубли UUID): пути отдельных файлов там не при чём, и сверять покрытие нечем — проверяется
+ * только сам факт прогона.
+ *
+ * `applies` — расширения файлов, к которым проверка вообще относится. Требовать от
+ * `query-lint` покрытия XML-файлов значило бы выдавать находку за то, что инструмент не
+ * обязан делать.
+ *
+ * `coverage` — чем становится непокрытый файл: `strict` — ошибкой, `advisory` —
+ * предупреждением. Строгость уместна там, где инструмент применим к КАЖДОМУ файлу своего
+ * расширения: гигиена читает байты любого файла, `query-lint` и `bsl-lint` — любой `.bsl`.
+ * У проверки структуры это не так: в выгрузке есть XML без своего валидатора
+ * (`Ext/Predefined.xml` и подобные служебные), и требовать покрытия для них значило бы
+ * выдавать находку за отсутствующий инструмент. Умолчание — `strict`.
+ */
+
+/** @type {Record<string, { layer: string, tool: string|null, about: string, granularity?: string, applies?: string[] }>} */
 export const SCOPES = {
   // --- контур code ---------------------------------------------------------
   'static-analysis': {
     layer: 'code',
     tool: 'tools/analyzer-run.mjs',
     about: 'диагностики статического анализатора (bsl-analyzer / BSL LS)',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
   },
   'query-alias-shadowing': {
     layer: 'code',
     tool: 'tools/query-lint.mjs',
     about: 'псевдоним источника затеняет колонку временной таблицы',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
   },
   'query-top-order': {
     layer: 'code',
     tool: 'tools/query-lint.mjs',
     about: '«ПЕРВЫЕ N» без «УПОРЯДОЧИТЬ ПО»',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
   },
   'transaction-nesting': {
     layer: 'code',
     tool: 'tools/bsl-lint.mjs',
     about: 'своя транзакция внутри неявной транзакции обработчика',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
   },
   'query-in-loop': {
     layer: 'code',
@@ -95,16 +123,21 @@ export const SCOPES = {
     layer: 'xml',
     tool: 'tools/xml/meta-validate.py',
     about: 'структура файла метаданных: обязательные узлы, порядок, типы',
+    granularity: 'files',
+    applies: ['.xml'],
+    coverage: 'advisory'
   },
   'registration-check': {
     layer: 'xml',
     tool: 'tools/xml/orphan-check.mjs',
     about: 'сверка «диск ↔ состав»: файл вне состава и состав без файла',
+    granularity: 'tree'
   },
   'uuid-uniqueness': {
     layer: 'xml',
     tool: 'tools/xml/uuid-unique.mjs',
     about: 'дубли UUID объектов метаданных в пределах выгрузки',
+    granularity: 'tree'
   },
 
   // --- контур hygiene ------------------------------------------------------
@@ -112,6 +145,7 @@ export const SCOPES = {
     layer: 'hygiene',
     tool: 'tools/hygiene-check.mjs',
     about: 'кодировка, BOM, переводы строк, недопустимые символы',
+    granularity: 'files'
   },
 };
 
