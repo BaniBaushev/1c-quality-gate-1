@@ -8,6 +8,7 @@
 
 import { readFileSync } from 'node:fs';
 import { relative, isAbsolute, sep } from 'node:path';
+import { resolveProjectRoot } from '../tools/project-root.mjs';
 
 const BOM_CODE = 0xfeff;
 
@@ -36,9 +37,14 @@ export function readPayload() {
   }
 }
 
-/** Корень проекта: переменная харнесса, иначе cwd из payload, иначе текущий каталог. */
+/**
+ * Корень проекта: переменная харнесса, иначе подъём по маркерам от cwd сессии.
+ *
+ * Разрешение общее с инструментами (`tools/project-root.mjs`) — иначе хук взводит гейт в
+ * одном каталоге состояния, а утилита снимает в другом, и оба сообщают об успехе.
+ */
 export function projectRoot(payload) {
-  return process.env.CLAUDE_PROJECT_DIR || payload?.cwd || process.cwd();
+  return resolveProjectRoot(payload?.cwd || process.cwd(), process.env).root;
 }
 
 /**

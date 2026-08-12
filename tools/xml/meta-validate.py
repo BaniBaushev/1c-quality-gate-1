@@ -149,6 +149,26 @@ def finalize():
         out_line(f"=== Result: {errors} errors, {warnings} warnings ({checks} checks) ===")
         result = "\n".join(output_lines)
     print(result)
+
+    # Отметка о прогоне в журнале плагина и готовая строка следа. Без них вердикт в отчёте
+    # пишется от руки по прочтении вывода — и «валидатор сказал» неотличимо от «мне так
+    # показалось». Импорт защищённый: валидатор используют и в отрыве от плагина.
+    verdict = "violation:qg:XML-STRUCT" if errors else "clean"
+    try:
+        from _qg_journal import record_run
+
+        record_run(
+            "structure-validation",
+            "tools/xml/meta-validate.py",
+            verdict="violation" if errors else "clean",
+            files=1,
+        )
+    except ImportError:
+        pass
+    print("")
+    print("## quality evidence")
+    print("")
+    print(f"[qg applied: layer=xml, scope=structure-validation, ids=[qg:XML-STRUCT], verdict={verdict}]")
     if out_file:
         with open(out_file, "w", encoding="utf-8-sig") as f:
             f.write(result)
@@ -617,6 +637,35 @@ if md_type in types_with_std_attrs:
 
         if check5_ok:
             report_ok(f"5. StandardAttributes: {len(std_attrs)} entries")
+
+if stopped:
+    finalize()
+    sys.exit(1)
+
+# ── Check 6a: structural nodes must not repeat ───────────────
+#
+# Дубль структурного узла (чаще всего второй <ChildObjects/>) появляется при ручном слиянии
+# и при копировании блока между файлами. Опасен тем, что все разборщики, включая этот
+# валидатор, читают ПЕРВЫЙ узел: `find()` возвращает `r[0]`. Пока проверки не было, файл со
+# вторым ChildObjects давал ровно тот же вердикт «Validation OK», что и целый, — а объекты
+# из второго узла в сборку не попадали.
+
+structural_counts = {}
+for child in type_node:
+    if not isinstance(child.tag, str):
+        continue
+    tag = local_name(child)
+    structural_counts[tag] = structural_counts.get(tag, 0) + 1
+
+structural_dups = [(t, n) for t, n in sorted(structural_counts.items()) if n > 1]
+if structural_dups:
+    for tag, count in structural_dups:
+        report_error(
+            f"6a. Duplicate structural node '{tag}' ({count} occurrences) in {md_type}: "
+            f"parsers read the first one, the rest are silently lost"
+        )
+else:
+    report_ok(f"6a. Structural nodes unique: {len(structural_counts)} distinct")
 
 if stopped:
     finalize()

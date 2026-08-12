@@ -17,6 +17,17 @@
  *   node analyzer-run.mjs --changed <файл> [--changed <файл> ...] [--engine <имя>] [--json]
  *   node analyzer-run.mjs --sentinel
  *
+ * Контракт `--json` (ключи верхнего уровня, названы здесь потому, что потребитель, читающий
+ * не тот ключ, получает пустоту и принимает её за «нарушений нет»):
+ *   findings    — находки: `{ file, line, column, code, severity, message }`. Ключ называется
+ *                 так, а НЕ `diagnostics`: `diagnostics` — имя поля во ВНУТРЕННЕМ формате
+ *                 движка, до нормализации, и снаружи его нет;
+ *   metrics     — метрики по файлам (`functions`, `complexity`, `cognitive_complexity`);
+ *   unparsed    — файлы с ошибками разбора: по ним не проверено ничего;
+ *   unanalyzed  — изменённые файлы, которых движок не видел вовсе;
+ *   evidence    — готовые строки следа, переносятся в отчёт дословно;
+ *   orphans     — переданные файлы вне корня конфигурации.
+ *
  * Коды выхода: 0 — прогон состоялся, 1 — анализатор недоступен и не обязателен,
  * 2 — обязателен и недоступен, либо часовой не подтверждён.
  */
@@ -28,6 +39,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readManifest, installed as bootstrapInstalled, install as installAnalyzer } from './analyzer-bootstrap.mjs';
 import { DEFAULTS, readConfig } from './config.mjs';
+import { resolveProjectRoot as resolveRoot } from './project-root.mjs';
+import { recordRun } from './run-journal.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PLUGIN_ROOT = dirname(HERE);
@@ -71,8 +84,9 @@ const SEVERITY_MAP = {
   hint: 'info',
 };
 
+/** Корень проекта — общий разрешитель: анализ от подкаталога не находит ни раскладки, ни настройки. */
 export function projectRoot() {
-  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  return resolveRoot(process.cwd(), process.env).root;
 }
 
 /**
@@ -267,6 +281,9 @@ export function normalizeBslAnalyzer(stdout, { root, base = projectRoot() } = {}
   const findings = [];
   const metrics = new Map();
   const unparsed = new Map();
+  // Файлы, которые движок вообще держал в руках. Без этого множества «ноль находок» по файлу
+  // и «файл не попал в анализ» дают одинаковый отчёт: пустой.
+  const seen = new Set();
   for (const line of String(stdout).split(/\r?\n/)) {
     if (!line.trim()) continue;
     let rec;
@@ -277,6 +294,7 @@ export function normalizeBslAnalyzer(stdout, { root, base = projectRoot() } = {}
     }
     if (rec.type !== 'file') continue;
     const file = toRelative(rec.path, base, root);
+    seen.add(file);
     if (rec.metrics) metrics.set(file, rec.metrics);
     for (const d of rec.diagnostics || []) {
       if (d.code === 'ParseError') {
@@ -296,7 +314,7 @@ export function normalizeBslAnalyzer(stdout, { root, base = projectRoot() } = {}
   // Из файла, который не разобрался, остальные находки тоже недостоверны: они получены на
   // обрывке синтаксического дерева.
   const clean = findings.filter((f) => !unparsed.has(f.file));
-  return { findings: clean, metrics, unparsed };
+  return { findings: clean, metrics, unparsed, seen };
 }
 
 /** Нормализует JSON-отчёт BSL Language Server (`-r json`). У него нумерация тоже нулевая. */
@@ -324,7 +342,7 @@ export function normalizeBslLs(jsonText, { root, base = projectRoot(), only = nu
       });
     }
   }
-  return { findings, metrics: new Map() };
+  return { findings, metrics: new Map(), seen: new Set(parsed.fileinfos?.map((f) => toRelative(f.path, base, root)) || []) };
 }
 
 /**
@@ -445,7 +463,15 @@ function collectBsl(dir, acc = []) {
  * сотни проверенных кодов бессмысленно. Нарушения выводятся по одной записи на код: так в
  * следе видно, ЧТО именно сработало, а не только что «что-то нашли».
  */
-export function toEvidence({ findings, sentinelResult, engine, version, unparsed = new Map(), resolution = null }) {
+export function toEvidence({
+  findings,
+  sentinelResult,
+  engine,
+  version,
+  unparsed = new Map(),
+  resolution = null,
+  unanalyzed = [],
+}) {
   const lines = [];
   const stamp = version ? `${engine}@${version}` : engine;
   lines.push(
@@ -455,6 +481,15 @@ export function toEvidence({ findings, sentinelResult, engine, version, unparsed
   // он растворяется в общем вердикте и выглядит проверенным.
   if (unparsed.size) {
     lines.push(`[qg not_verified: dimension=static-analysis, reason=parse_failed, files=${unparsed.size}]`);
+  }
+  // Изменённый файл, не встреченный в отчёте движка ни разу, не проверен ничем. Раньше он
+  // просто исчезал: находок нет, метрик нет — и общий вердикт выходил «clean». Так молчали
+  // файлы вне корня конфигурации (внешние обработки), отсечённые фильтром по подсистемам и
+  // не попавшие в область анализа по любой другой причине.
+  if (unanalyzed.length) {
+    lines.push(
+      `[qg not_verified: dimension=static-analysis, reason=not_in_analyzer_report, files=${unanalyzed.length}]`
+    );
   }
   // Разрешение чужих имён без основной конфигурации невозможно: об этом надо сказать, иначе
   // отсутствие находок по межфайловым связям читается как их отсутствие в коде.
@@ -578,6 +613,7 @@ async function main(argv) {
   const findings = [];
   const metrics = new Map();
   const unparsed = new Map();
+  const seen = new Set();
   let orphans = [];
   let resolution = 'full';
 
@@ -605,6 +641,7 @@ async function main(argv) {
     findings.push(...norm.findings);
     for (const [k, v] of norm.metrics) metrics.set(k, v);
     for (const [k, v] of norm.unparsed) unparsed.set(k, v);
+    for (const f of norm.seen) seen.add(f);
   } else {
     const grouped = groupByConfigRoot(args.changed, root);
     orphans = grouped.orphans;
@@ -625,8 +662,15 @@ async function main(argv) {
       findings.push(...norm.findings);
       for (const [k, v] of norm.metrics) metrics.set(k, v);
       for (const [k, v] of norm.unparsed) unparsed.set(k, v);
+      for (const f of norm.seen || []) seen.add(f);
     }
   }
+
+  // Файл считается проверенным, только если движок его видел. Файлы вне корня конфигурации
+  // (`orphans`) сюда попадают тем же путём — отдельно их перечислять не нужно.
+  const unanalyzed = args.changed
+    .map((f) => toRelative(resolve(f), root, root))
+    .filter((f) => !seen.has(f));
 
   // Разбирали расширение в одиночку — значит имена основной конфигурации и БСП неразрешимы
   // по построению. Такие находки не удаляем (скрывать нельзя: среди них бывают и настоящие,
@@ -638,10 +682,23 @@ async function main(argv) {
     }
   }
 
-  const evidence = toEvidence({ findings, sentinelResult, engine, version, unparsed, resolution });
+  const evidence = toEvidence({ findings, sentinelResult, engine, version, unparsed, resolution, unanalyzed });
+
+  // Отметка о прогоне ставится здесь, а не в `toEvidence`: та лишь строит строки и вызывается
+  // кем угодно, включая тесты, — журнал же обязан значить «инструмент отработал по этим
+  // файлам». Число непроверенных файлов уходит туда же: заявление о полноте, взятое из того
+  // самого отчёта, который проверяется, ничего не подтверждает.
+  recordRun({
+    scope: 'static-analysis',
+    tool: 'tools/analyzer-run.mjs',
+    verdict: findings.length ? 'violation' : 'clean',
+    files: args.changed.length,
+    unanalyzed: unanalyzed.length,
+    root,
+  });
 
   if (args.json) {
-    out(JSON.stringify({ engine, version, sentinel: sentinelResult, resolution, findings, metrics: Object.fromEntries(metrics), unparsed: Object.fromEntries(unparsed), evidence, orphans }, null, 2));
+    out(JSON.stringify({ engine, version, sentinel: sentinelResult, resolution, findings, metrics: Object.fromEntries(metrics), unparsed: Object.fromEntries(unparsed), unanalyzed, evidence, orphans }, null, 2));
     return sentinelResult.status === 'found' ? 0 : 2;
   }
 
@@ -655,6 +712,10 @@ async function main(argv) {
     if (unparsed.size) {
       out(`НЕ РАЗОБРАНО файлов: ${unparsed.size} — по ним не проверено ничего:`);
       for (const [f, n] of unparsed) out(`  ${f} (ошибок разбора: ${n})`);
+    }
+    if (unanalyzed.length) {
+      out(`НЕ АНАЛИЗИРОВАЛИСЬ: ${unanalyzed.length} — движок не видел этих файлов, «чисто» к ним не относится:`);
+      for (const f of unanalyzed) out(`  ${f}`);
     }
     out(`Движок: ${engine}${version ? ' ' + version : ''} | часовой: ${sentinelResult.status} | находок: ${findings.length}`);
     report(findings, out, { all: args.all });

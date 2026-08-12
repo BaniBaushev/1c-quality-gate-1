@@ -30,6 +30,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { recordRun } from '../run-journal.mjs';
 
 /** Корневой элемент файла метаданных 1С — единственный, чьи UUID обязаны быть уникальны. */
 const METADATA_ROOT = 'MetaDataObject';
@@ -126,6 +127,18 @@ function main(argv) {
     .filter(([, where]) => where.length > 1 || where[0].times > 1)
     .map(([uuid, where]) => ({ uuid, where }));
 
+  // Готовая строка следа и отметка о прогоне. Раньше инструмент возвращал только вердикт
+  // человеку, а запись в отчёт составляла модель — то есть проверка, оставляющая машинный
+  // след, заканчивалась строкой, написанной от руки.
+  const verdict = duplicates.length ? 'violation:qg:XML-UUID-DUP' : 'clean';
+  const evidence = `[qg applied: layer=xml, scope=uuid-uniqueness, ids=[qg:XML-UUID-DUP], verdict=${verdict}]`;
+  recordRun({
+    scope: 'uuid-uniqueness',
+    tool: 'tools/xml/uuid-unique.mjs',
+    verdict: duplicates.length ? 'violation' : 'clean',
+    files: scanned,
+  });
+
   if (asJson) {
     process.stdout.write(
       JSON.stringify(
@@ -135,6 +148,7 @@ function main(argv) {
           uuids: places.size,
           duplicates,
           skipped: [...skippedRoots].map(([element, files]) => ({ element, files })),
+          evidence,
         },
         null,
         2
@@ -159,6 +173,7 @@ function main(argv) {
     } else {
       process.stdout.write('Дублей UUID не найдено.\n');
     }
+    process.stdout.write('\n## quality evidence\n\n' + evidence + '\n');
   }
 
   return duplicates.length ? 2 : 0;

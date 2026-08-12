@@ -30,6 +30,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { basename } from 'node:path';
+import { recordRun } from './run-journal.mjs';
 
 /** Символы идентификатора 1С: кириллица делает `\b` в JS бесполезной. */
 const W = 'A-Za-zА-Яа-яЁё0-9_';
@@ -176,11 +177,17 @@ function checkFile(path) {
   return lintSource(readFileSync(path, 'utf8').replace(/^﻿/, ''), basename(path));
 }
 
-function evidenceBlock(findings, modulesSeen) {
+function evidenceBlock(findings, modulesSeen, filesCount = null) {
   if (!modulesSeen) {
     return '[qg skipped: layer=code, scope=transaction-nesting, reason=not_applicable]';
   }
   const hit = findings.some((f) => f.rule === 'qg:BSL-TXN-IN-HANDLER');
+  recordRun({
+    scope: 'transaction-nesting',
+    tool: 'tools/bsl-lint.mjs',
+    verdict: hit ? 'violation' : 'clean',
+    files: filesCount,
+  });
   return (
     '[qg applied: layer=code, scope=transaction-nesting, ids=[qg:BSL-TXN-IN-HANDLER], ' +
     `verdict=${hit ? 'violation:qg:BSL-TXN-IN-HANDLER' : 'clean'}]`
@@ -206,7 +213,7 @@ function main(argv) {
   // неявной транзакции не имеют. Если таких файлов не было вовсе — это `not_applicable`,
   // а не «чисто»: молчание об области применения читается как проведённая проверка.
   const modulesSeen = files.some((f) => IMPLICIT_TRANSACTION_MODULES.has(basename(f)));
-  const evidence = evidenceBlock(findings, modulesSeen);
+  const evidence = evidenceBlock(findings, modulesSeen, files.length);
 
   if (asJson) {
     process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');

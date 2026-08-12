@@ -14,6 +14,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { recordRun } from './run-journal.mjs';
 
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
@@ -142,6 +143,43 @@ function checkFile(path) {
   return findings;
 }
 
+/**
+ * Внутренний код правила → идентификатор следа.
+ *
+ * Соответствие вынесено в инструмент, а не оставлено читателю. Пока его не было, инструмент
+ * печатал `invalid-dash`, навык требовал `qg:HYG-DASH`, и перевод одного в другое делала
+ * модель — то есть строку следа всё равно писали руками, даже прогнав проверку.
+ */
+const EVIDENCE_IDS = {
+  'bom-missing': 'qg:HYG-BOM',
+  encoding: 'qg:HYG-ENCODING',
+  'control-char': 'qg:HYG-CTRL',
+  'invalid-dash': 'qg:HYG-DASH',
+  'mixed-eol': 'qg:HYG-EOL',
+};
+
+/**
+ * Строит след: при находках — по записи на сработавшее правило, иначе одна запись со всем
+ * набором. Перечислять пять идентификаторов в чистом прогоне уместно: их пять, а не полторы
+ * сотни, и видно, что именно проверено.
+ */
+function evidenceBlock(findings, filesCount) {
+  const hit = [...new Set(findings.map((f) => EVIDENCE_IDS[f.rule]).filter(Boolean))].sort();
+  recordRun({
+    scope: 'file-encoding',
+    tool: 'tools/hygiene-check.mjs',
+    verdict: hit.length ? 'violation' : 'clean',
+    files: filesCount,
+  });
+  if (hit.length === 0) {
+    const all = Object.values(EVIDENCE_IDS).sort().join(',');
+    return `[qg applied: layer=hygiene, scope=file-encoding, ids=[${all}], verdict=clean]`;
+  }
+  return hit
+    .map((id) => `[qg applied: layer=hygiene, scope=file-encoding, ids=[${id}], verdict=violation:${id}]`)
+    .join('\n');
+}
+
 function main(argv) {
   const args = argv.slice(2);
   const asJson = args.includes('--json');
@@ -156,8 +194,10 @@ function main(argv) {
   const errors = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'error').length, 0);
   const warns = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'warn').length, 0);
 
+  const evidence = evidenceBlock(report.flatMap((r) => r.findings), files.length);
+
   if (asJson) {
-    process.stdout.write(JSON.stringify({ files: report, errors, warns }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');
   } else {
     for (const r of report) {
       if (r.findings.length === 0) continue;
@@ -169,6 +209,7 @@ function main(argv) {
       process.stdout.write('\n');
     }
     process.stdout.write(`Проверено файлов: ${files.length}. Ошибок: ${errors}, предупреждений: ${warns}.\n`);
+    process.stdout.write('\n## quality evidence\n\n' + evidence + '\n');
   }
 
   return errors ? 2 : warns ? 1 : 0;

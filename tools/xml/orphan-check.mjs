@@ -20,6 +20,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { recordRun } from '../run-journal.mjs';
 
 /**
  * Каталог на диске → тег в составе конфигурации.
@@ -168,9 +169,22 @@ function main(argv) {
     return Object.values(DIR_TO_TAG).includes(tag) && !onDiskKeys.has(key);
   });
 
+  // Готовая строка следа и отметка о прогоне: вердикт, составленный по выводу инструмента
+  // от руки, неотличим от вердикта, составленного без прогона.
+  const hit = orphans.length || missing.length;
+  const evidence =
+    `[qg applied: layer=xml, scope=registration-check, ids=[qg:XML-ORPHAN], ` +
+    `verdict=${hit ? 'violation:qg:XML-ORPHAN' : 'clean'}]`;
+  recordRun({
+    scope: 'registration-check',
+    tool: 'tools/xml/orphan-check.mjs',
+    verdict: hit ? 'violation' : 'clean',
+    files: found.length,
+  });
+
   if (asJson) {
     process.stdout.write(
-      JSON.stringify({ root, orphans, missing, unknownDirs, checked: found.length }, null, 2) + '\n'
+      JSON.stringify({ root, orphans, missing, unknownDirs, checked: found.length, evidence }, null, 2) + '\n'
     );
   } else {
     process.stdout.write(`Проверено объектов на диске: ${found.length}\n`);
@@ -197,6 +211,7 @@ function main(argv) {
     if (!orphans.length && !missing.length) {
       process.stdout.write('Расхождений диск↔состав не найдено.\n');
     }
+    process.stdout.write('\n## quality evidence\n\n' + evidence + '\n');
   }
 
   return orphans.length || missing.length ? 2 : 0;

@@ -15,13 +15,22 @@
 import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { validate } from './evidence-validator.mjs';
+import { resolveProjectRoot } from './project-root.mjs';
 
 const STATE_DIR = ['.claude', '.state'];
 const PENDING = 'qg-pending.json';
 const DONE = 'qg-done.json';
 
+/**
+ * Корень проекта — общий разрешитель.
+ *
+ * По `process.cwd()` состояние гейта расщеплялось: взводит его хук (у которого корень
+ * правильный), а снимает эта утилита из того каталога, где оказалась модель. Из подкаталога
+ * `status` отвечал «гейт не взведён», а `release` — «снимать нечего» с кодом 0, не сняв
+ * ничего. Обе фразы неотличимы от честной работы.
+ */
 function root() {
-  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  return resolveProjectRoot(process.cwd(), process.env).root;
 }
 
 function paths() {

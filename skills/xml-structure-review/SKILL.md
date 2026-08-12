@@ -229,9 +229,14 @@ reason=python_unavailable]` и всё равно выполни пункт 1: с
 ```
 [qg applied: layer=xml, scope=registration-check, ids=[qg:XML-ORPHAN], verdict=violation:qg:XML-ORPHAN]
 [qg applied: layer=xml, scope=uuid-uniqueness, ids=[qg:XML-UUID-DUP], verdict=clean]
-[qg applied: layer=xml, scope=object-structure, ids=[qg:XML-STRUCT], verdict=clean]
+[qg applied: layer=xml, scope=structure-validation, ids=[qg:XML-STRUCT], verdict=clean]
 [qg skipped: layer=xml, reason=not_applicable]
 ```
+
+**Первые три строки печатают сами инструменты** (`orphan-check.mjs`, `uuid-unique.mjs`,
+`meta-validate.py`) — переноси их вывод дословно. Каждый отмечается в журнале прогонов, и
+валидатор следа сверяет: запись `applied` по проверке, инструмент которой не запускался,
+снятие гейта не пройдёт.
 
 Формат — `../quality-gate/references/evidence-format.md`.
 

@@ -11,9 +11,10 @@
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, relative } from 'node:path';
+import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { TOOL_BACKED, RENAMED, isKnownScope } from './evidence-scopes.mjs';
 
 /**
  * Корень проверяемого пакета. По умолчанию — сам плагин; `--root` нужен тестам, чтобы
@@ -297,6 +298,35 @@ for (const f of files.filter((p) => p.endsWith('.md'))) {
     // Заголовок может нести уточнение в скобках: «Путь к инструментам плагина (`$QG`)».
     const found = [...headingsOf(target)].some((h) => h === heading || h.startsWith(`${heading} (`));
     if (!found) fail(rel(f), `в навыке ${skill} нет раздела «${heading}»`);
+  }
+}
+
+// --- 5в. Имена проверок в документации — из словаря --------------------------
+//
+// Расхождение этого рода не читается как ошибка: пример в навыке выглядит правильным, и
+// модель добросовестно его копирует. Так в отчёты попадали `static-diagnostics` и
+// `lsp-diagnostics` — имена, которых нет ни в одном инструменте. Валидатор следа их теперь
+// отвергает, но узнать об этом на живом прогоне дороже, чем здесь.
+{
+  // Фикстуры тестов исключены намеренно: заведомо испорченный след — их содержимое, а не
+  // дефект. Валидатор следа обязан на них ругаться, этот — нет.
+  const FIXTURES = join(ROOT, 'tests', 'fixtures') + sep;
+  const docs = files.filter((f) => f.endsWith('.md') && !f.startsWith(FIXTURES));
+  for (const f of docs) {
+    const text = readFileSync(f, 'utf8');
+    for (const m of text.matchAll(/scope=([a-z0-9-]+)/g)) {
+      const scope = m[1];
+      if (isKnownScope(scope)) continue;
+      const hint = RENAMED[scope] ? ` — переименован в «${RENAMED[scope]}»` : '';
+      fail(rel(f), `scope=${scope} отсутствует в словаре проверок (tools/evidence-scopes.mjs)${hint}`);
+    }
+  }
+}
+
+// --- 5г. У каждой проверки с инструментом инструмент существует ---------------
+for (const [scope, tool] of Object.entries(TOOL_BACKED)) {
+  if (!existsSync(join(ROOT, tool))) {
+    fail('evidence-scopes.mjs', `проверка ${scope} ссылается на несуществующий инструмент ${tool}`);
   }
 }
 

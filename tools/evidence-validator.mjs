@@ -7,7 +7,7 @@
  * ОБОСНОВАННЫЙ пропуск. Валидатор отвергает записи, которые лишь выглядят заполненными.
  *
  * Использование:
- *   node evidence-validator.mjs <файл> [--gate]
+ *   node evidence-validator.mjs <файл> [--gate] [--root <каталог проекта>]
  *
  * Режимы:
  *   lint  (по умолчанию) — только оформление; ноль записей = чисто.
@@ -18,7 +18,11 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { resolve as resolveConfig, evidenceValue } from './config.mjs';
+import { SCOPES, TOOL_BACKED, RENAMED, isKnownScope } from './evidence-scopes.mjs';
+import { readJournal } from './run-journal.mjs';
+import { projectRoot } from './project-root.mjs';
 
 export const SECTION = '## quality evidence';
 
@@ -185,13 +189,73 @@ export function extractRecords(text) {
   return records;
 }
 
+/**
+ * Проверяет имя проверки по закрытому словарю.
+ *
+ * Раньше здесь стояла проверка на kebab-case, и любое похожее на имя слово проходило. Этим
+ * пользовалась не злая воля, а документация: она предлагала `static-diagnostics` и
+ * `lsp-diagnostics` там, где инструмент печатает `static-analysis`. Запись со свободным
+ * именем закрывает требование, которого нет, — и выглядит при этом как проверка.
+ *
+ * Переименованные имена называются вместе с заменой: «неизвестный scope» без подсказки
+ * заставляет гадать, а прежние отчёты ещё существуют.
+ */
+function checkScopeName(rec, add) {
+  const scope = rec.fields.scope;
+  if (!scope) return;
+  if (isKnownScope(scope)) {
+    const expected = SCOPES[scope].layer;
+    if (rec.fields.layer && rec.fields.layer !== expected) {
+      add('warn', rec.line, `scope="${scope}" относится к слою ${expected}, а в записи layer=${rec.fields.layer}`);
+    }
+    return;
+  }
+  if (RENAMED[scope]) {
+    add('error', rec.line, `scope="${scope}" переименован — правильно "${RENAMED[scope]}"`);
+    return;
+  }
+  if (!KEBAB.test(scope)) {
+    add('error', rec.line, `scope="${scope}" не в kebab-case и не из словаря проверок`);
+    return;
+  }
+  add(
+    'error',
+    rec.line,
+    `scope="${scope}" не из словаря проверок (tools/evidence-scopes.mjs): ` +
+      'запись выглядит заполненной, но не соответствует ни одной проверке плагина'
+  );
+}
+
 function isEmpty(value) {
   if (value === undefined || value === null) return true;
   if (Array.isArray(value)) return value.length === 0;
   return String(value).trim().length === 0;
 }
 
-export function validate(text, { gate = false } = {}) {
+/**
+ * Время последней зафиксированной правки — граница годности доказательств.
+ *
+ * Прогон инструмента, сделанный до правки файла, доказывает состояние, которого уже нет.
+ * Состояние гейта читается напрямую, без импорта `gate.mjs`: тот сам вызывает валидатор, и
+ * импорт был бы кольцевым.
+ */
+function lastGateActivity(root) {
+  const file = join(root, '.claude', '.state', 'qg-pending.json');
+  if (!existsSync(file)) return null;
+  try {
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    const stamps = Object.values(state?.sessions || {})
+      .map((s) => String(s?.updatedAt || s?.armedAt || ''))
+      .filter(Boolean)
+      .sort();
+    return stamps.length ? stamps[stamps.length - 1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function validate(text, { gate = false, root = null } = {}) {
+  const projectDir = root || projectRoot();
   const problems = [];
   const add = (severity, line, message) => problems.push({ severity, line, message });
 
@@ -234,14 +298,13 @@ export function validate(text, { gate = false } = {}) {
     if (rec.type === 'scope' && !gate && isEmpty(rec.fields.config)) {
       add('warn', rec.line, 'в записи scope нет поля config: неизвестно, по чьим порогам выбрана глубина');
     }
+    if (rec.type === 'skipped') checkScopeName(rec, add);
     if (rec.type === 'applied') {
       const v = rec.fields.verdict;
       if (v && v !== 'clean' && !/^violation:.+/.test(v)) {
         add('error', rec.line, `verdict="${v}": ожидается clean либо violation:<id>`);
       }
-      if (rec.fields.scope && !KEBAB.test(rec.fields.scope)) {
-        add('warn', rec.line, `scope="${rec.fields.scope}" не в kebab-case`);
-      }
+      checkScopeName(rec, add);
       const ids = Array.isArray(rec.fields.ids) ? rec.fields.ids : [];
       for (const id of ids) {
         if (!ID_PATTERN.test(id)) add('warn', rec.line, `идентификатор "${id}" непохож на stdNNN / bslls:X / acc:NNN / qg:X`);
@@ -279,7 +342,7 @@ export function validate(text, { gate = false } = {}) {
   // опирающиеся на неё, смягчаются до предупреждения.
   let project = null;
   try {
-    project = resolveConfig();
+    project = resolveConfig(projectDir);
   } catch {
     /* настройка недоступна */
   }
@@ -415,6 +478,55 @@ export function validate(text, { gate = false } = {}) {
     );
   }
 
+  // --- сверка с журналом прогонов --------------------------------------------
+  //
+  // У части проверок есть исполняемый инструмент. Для них строка `applied` обязана
+  // происходить из прогона: инструмент печатает её сам и одновременно отмечается в журнале.
+  // Без этой сверки вердикт, полученный чтением кода глазами, попадает в отчёт в том же
+  // виде, что и полученный прогоном, — наблюдалось в живой сессии четыре раза подряд.
+  //
+  // Чего сверка НЕ делает: она не доказывает, что инструмент проверял именно эти файлы, и
+  // не защищает от записи, дописанной в журнал вручную. Независимого источника, из которого
+  // такое можно перевывести, у плагина нет. Это обнаружение молчания, и только.
+  const journal = readJournal(projectDir);
+  const since = lastGateActivity(projectDir);
+  const fresh = journal.filter((r) => !since || String(r.ts || '') >= since);
+  const runScopes = new Set(fresh.map((r) => r.scope));
+
+  for (const rec of applied) {
+    const scope = String(rec.fields.scope || '');
+    const tool = TOOL_BACKED[scope];
+    if (!tool) continue;
+    if (runScopes.has(scope)) continue;
+    const ranEarlier = journal.some((r) => r.scope === scope);
+    add(
+      'error',
+      rec.line,
+      ranEarlier
+        ? `проверка "${scope}" заявлена как выполненная, но последний прогон ${tool} старше ` +
+          'последней правки файлов: доказательство относится к прежнему состоянию — прогони заново'
+        : `проверка "${scope}" заявлена как выполненная, но ${tool} в этом прогоне не запускался. ` +
+          'Строку следа печатает сам инструмент — запусти его и перенеси вывод'
+    );
+  }
+
+  // Инструмент сообщает в журнал, сколько изменённых файлов он НЕ смотрел. Если такие есть,
+  // отчёт обязан их признать: «нарушений не найдено» по непрочитанному файлу — самая дорогая
+  // из возможных ложных зелёных отметок.
+  const lastStatic = [...fresh].reverse().find((r) => r.scope === 'static-analysis');
+  const declaredUnanalyzed = records.some(
+    (r) => r.type === 'not_verified' && String(r.fields.dimension || '') === 'static-analysis'
+  );
+  if (lastStatic && Number(lastStatic.unanalyzed) > 0 && !declaredUnanalyzed) {
+    add(
+      'error',
+      0,
+      `анализатор не смотрел ${lastStatic.unanalyzed} из изменённых файлов, а в следе это не заявлено: ` +
+        'нужна запись [qg not_verified: dimension=static-analysis, reason=not_in_analyzer_report, files=N] — ' +
+        'её печатает analyzer-run.mjs'
+    );
+  }
+
   const errors = problems.filter((p) => p.severity === 'error').length;
   return { records, problems, exitCode: errors ? 2 : problems.length ? 1 : 0 };
 }
@@ -422,7 +534,13 @@ export function validate(text, { gate = false } = {}) {
 function main(argv) {
   const args = argv.slice(2);
   const gate = args.includes('--gate');
-  const file = args.find((a) => !a.startsWith('--'));
+  // Корень проекта обычно определяется сам. Явный `--root` нужен, когда отчёт проверяют для
+  // чужого дерева — например, из тестов: журнал прогонов и настройка лежат в проекте, а не
+  // рядом с файлом отчёта.
+  const rootArg = args.indexOf('--root');
+  const root = rootArg === -1 ? null : args[rootArg + 1];
+  const skip = rootArg === -1 ? -1 : rootArg + 1;
+  const file = args.find((a, i) => !a.startsWith('--') && i !== skip);
 
   if (!file) {
     process.stderr.write('Использование: node evidence-validator.mjs <файл> [--gate]\n');
@@ -433,7 +551,7 @@ function main(argv) {
     return 2;
   }
 
-  const { records, problems, exitCode } = validate(readFileSync(file, 'utf8'), { gate });
+  const { records, problems, exitCode } = validate(readFileSync(file, 'utf8'), { gate, root });
 
   for (const p of problems) {
     const where = p.line ? `${file}:${p.line}` : file;

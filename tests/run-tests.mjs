@@ -716,6 +716,20 @@ if (python.ok) {
   const rightless = runPy(pyTool('role'), ['-Path', join(FIXTURES, 'xml', 'role', 'QG_РольПравПеречисления')]);
   check('право на перечисление названо несуществующим, а не неизвестным типом',
     rightless.out.includes('has no object rights'), rightless.out.trim().slice(0, 140));
+
+  // Дубль структурного узла. Разборщики (включая сам валидатор: `find()` возвращает первый
+  // элемент) читают только первый ChildObjects, поэтому до появления проверки сломанный и
+  // целый файл давали ОДИН вердикт «Validation OK» — тот случай, когда молчание инструмента
+  // означает не «дефекта нет», а «дефект этого класса не ищется».
+  const dupNode = runPy(pyTool('meta'), ['-Path', xml('meta', 'dup-childobjects.xml')]);
+  check('дубль ChildObjects найден', dupNode.code === 1 && dupNode.out.includes('Duplicate structural node'), dupNode.out.trim().slice(0, 140));
+  const intactNode = runPy(pyTool('meta'), ['-Path', xml('meta', 'valid.xml')]);
+  check('на целом файле дубля не находит', !intactNode.out.includes('Duplicate structural node'), intactNode.out.trim().slice(0, 120));
+
+  // Валидатор структуры печатает готовую строку следа: пока её не было, вердикт в отчёт
+  // переносила модель — то есть проверка с инструментом заканчивалась записью от руки.
+  check('валидатор печатает запись следа', intactNode.out.includes('scope=structure-validation'), intactNode.out.trim().slice(-140));
+  check('вердикт следа отражает находки', dupNode.out.includes('verdict=violation:qg:XML-STRUCT'), dupNode.out.trim().slice(-140));
 }
 
 // ---------------------------------------------------------------------------
@@ -733,8 +747,28 @@ writeFileSync(
   'utf8'
 );
 const customProj = { env: { CLAUDE_PROJECT_DIR: CUSTOM_PROJ } };
+
+/**
+ * Заводит журнал прогонов НАСТОЯЩИМ запуском инструмента.
+ *
+ * Позитивные фикстуры содержат `scope=file-encoding` — проверку, у которой есть инструмент,
+ * и валидатор требует для неё отметку о прогоне. Записать отметку в журнал напрямую было бы
+ * проще, но тогда тест перестал бы падать, если инструмент однажды перестанет отмечаться, —
+ * то есть проверял бы сам себя.
+ */
+function seedJournal(projDir) {
+  mkdirSync(projDir, { recursive: true });
+  const sample = join(projDir, 'seed.bsl');
+  writeFileSync(sample, BOM + 'Процедура Пример()\r\nКонецПроцедуры\r\n', 'utf8');
+  run('tools/hygiene-check.mjs', [sample], { env: { CLAUDE_PROJECT_DIR: projDir } });
+}
+
+const EV_PROJ = join(WORK, 'ev-journal-proj');
+seedJournal(EV_PROJ);
+seedJournal(CUSTOM_PROJ);
+const evProj = { env: { CLAUDE_PROJECT_DIR: EV_PROJ } };
 {
-  const r = run('tools/evidence-validator.mjs', [ev('valid.md'), '--gate']);
+  const r = run('tools/evidence-validator.mjs', [ev('valid.md'), '--gate'], evProj);
   check('полный корректный след принимается', r.code === 0, r.out.trim().slice(0, 120));
 }
 {
@@ -945,6 +979,9 @@ section('Механика гейта');
   const rel = run('tools/gate.mjs', ['release', '--class', 'C3', '--reason', 'просто не хочу проверять'], { env });
   check('снятие C3 без следа запрещено', rel.code === 2, rel.out.trim().slice(0, 100));
 
+  // След содержит проверку с инструментом — прогоняем его после взвода гейта: доказательство
+  // обязано быть не старше последней правки, иначе снятие не пройдёт.
+  seedJournal(proj);
   const relOk = run('tools/gate.mjs', ['release', '--evidence', ev('valid.md'), '--session', 'S1'], { env });
   check('снятие по валидному следу проходит', relOk.code === 0, relOk.out.trim().slice(0, 120));
   check('после снятия Stop пропускает', stop('S1') === 0);
@@ -1136,6 +1173,8 @@ section('Проектная настройка — создание, разре�
       '[qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM], verdict=clean]\n' +
       '[qg not_verified: dimension=compilation, reason=no_platform]\n'
   );
+  // Проверка гигиены в следе есть — значит инструмент обязан быть прогнан по-настоящему.
+  seedJournal(proj);
   const pastedR = run('tools/evidence-validator.mjs', [pasted, '--gate'], { env: { CLAUDE_PROJECT_DIR: proj } });
   check('напечатанная инструментом строка проходит валидатор', pastedR.code === 0, pastedR.out.trim().slice(0, 140));
 
@@ -1265,6 +1304,20 @@ const mustContain = [
   // дефект по соседству. Обе половины должны остаться в его карте проверок.
   ['agents/bsl-verifier.md', 'query-lint.mjs', 'верификатор прогоняет проверку текстов запросов'],
   ['agents/bsl-verifier.md', 'ОБЪЕДИНИТЬ', 'верификатору названа законная форма ветки объединения'],
+  // Причина, по которой контур исполняли руками: оркестратор называл навыки, но не
+  // инструменты, и перечень выглядел самодостаточным. Таблица и правило про журнал —
+  // единственное, что отличает «проверено» от «прочитано глазами».
+  ['skills/quality-gate/SKILL.md', 'Контур исполняется вызовом навыка', 'оркестратор запрещает исполнять контур по памяти'],
+  ['skills/quality-gate/SKILL.md', 'qg-runs.jsonl', 'оркестратор называет журнал прогонов'],
+  ['skills/quality-gate/SKILL.md', 'tools/query-lint.mjs', 'оркестратор называет инструменты проверок поимённо'],
+  ['skills/quality-gate/references/evidence-format.md', 'не старше последней правки', 'срок годности доказательства назван'],
+  ['skills/quality-gate/references/evidence-format.md', 'дописанной в журнал вручную', 'граница гарантии журнала заявлена прямо'],
+  ['skills/file-hygiene/SKILL.md', 'печатает сам', 'контур гигиены переносит вывод инструмента, а не сочиняет запись'],
+  ['skills/xml-structure-review/SKILL.md', 'печатают сами инструменты', 'контур XML переносит вывод инструментов'],
+  // Файл, до которого анализатор не добрался, раньше исчезал из отчёта бесследно.
+  ['skills/quality-gate/references/evidence-format.md', 'not_in_analyzer_report', 'непроверенные анализатором файлы заявляются'],
+  ['skills/quality-gate/SKILL.md', 'не встреченный в', 'оркестратор объясняет, когда файл считается непроверенным'],
+  ['README.md', 'qg-runs.jsonl', 'README называет журнал прогонов'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
@@ -1479,12 +1532,27 @@ section('Часовой проверяется по целям, а не «хот
   const v8 = '[qg sentinel: target=v8std, id=std454, status=found]\n';
   const bslls = '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found]\n';
 
+  // Предмет этой секции — часовой, а не журнал прогонов. Отметку о прогоне анализатора
+  // пишем напрямую: запустить настоящий bsl-analyzer в тестах нельзя (его может не быть на
+  // машине), а без отметки все следы со `static-analysis` отвергались бы по другой причине,
+  // и секция проверяла бы не то, ради чего написана. Сам механизм журнала проверяется
+  // отдельной секцией — там отметка появляется настоящим прогоном.
+  const sentinelProj = join(WORK, 'sentinel-proj');
+  rmSync(sentinelProj, { recursive: true, force: true });
+  mkdirSync(join(sentinelProj, '.claude', '.state'), { recursive: true });
+  writeFileSync(
+    join(sentinelProj, '.claude', '.state', 'qg-runs.jsonl'),
+    JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', scope: 'static-analysis', tool: 'tools/analyzer-run.mjs', verdict: 'clean', unanalyzed: 0 }) + '\n',
+    'utf8'
+  );
+  const sp = { env: { CLAUDE_PROJECT_DIR: sentinelProj } };
+
   const masked = writeBytes('ev-masked.md', head + v8 + clean + notVerified);
-  const r1 = run('tools/evidence-validator.mjs', [masked, '--gate']);
+  const r1 = run('tools/evidence-validator.mjs', [masked, '--gate'], sp);
   check('живой v8std НЕ маскирует отсутствие часового по анализатору', r1.code === 2, r1.out.trim().slice(0, 120));
 
   const ok = writeBytes('ev-both.md', head + v8 + bslls + clean + notVerified);
-  const r2 = run('tools/evidence-validator.mjs', [ok, '--gate']);
+  const r2 = run('tools/evidence-validator.mjs', [ok, '--gate'], sp);
   check('оба часовых подтверждены — след принят', r2.code === 0, r2.out.trim().slice(0, 120));
 
   const dead = writeBytes('ev-dead.md', head + v8 + '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=not_found]\n' + clean + notVerified);
@@ -1508,8 +1576,270 @@ section('Часовой проверяется по целям, а не «хот
 
   // Нарушения не требуют часового: «нашли» самодостаточно, недостоверно только «не нашли».
   const onlyViolations = writeBytes('ev-viol.md', head + v8 + '[qg applied: layer=code, scope=static-analysis, ids=[bslls:MagicNumber], verdict=violation:bslls:MagicNumber]\n');
-  const r4 = run('tools/evidence-validator.mjs', [onlyViolations, '--gate']);
+  const r4 = run('tools/evidence-validator.mjs', [onlyViolations, '--gate'], sp);
   check('вердикт с нарушениями не требует часового по анализатору', r4.code === 0, r4.out.trim().slice(0, 120));
+}
+
+// ---------------------------------------------------------------------------
+section('Корень проекта — один разрешитель на все инструменты');
+
+{
+  const pr = await import(pathToFileURL(join(ROOT, 'tools', 'project-root.mjs')).href);
+
+  const tree = join(WORK, 'root-probe');
+  rmSync(tree, { recursive: true, force: true });
+  const deep = join(tree, 'src', 'cf', 'CommonModules');
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(tree, '.1c-quality-gate.json'), '{}', 'utf8');
+
+  const fromDeep = pr.resolveProjectRoot(deep, {});
+  check('из подкаталога поднимается до настройки', fromDeep.root === tree, `${fromDeep.root} / ${fromDeep.via}`);
+  check('способ опознания назван', fromDeep.via === 'marker' && fromDeep.marker === '.1c-quality-gate.json', fromDeep.via);
+
+  // Настройка важнее .git: в репозитории с несколькими выгрузками корнем гейта может быть
+  // подкаталог, и тогда настройка лежит там, а .git — выше.
+  const gitOnly = join(WORK, 'root-git');
+  rmSync(gitOnly, { recursive: true, force: true });
+  mkdirSync(join(gitOnly, 'nested', 'deeper'), { recursive: true });
+  mkdirSync(join(gitOnly, '.git'), { recursive: true });
+  writeFileSync(join(gitOnly, 'nested', '.1c-quality-gate.json'), '{}', 'utf8');
+  check('настройка перевешивает .git', pr.resolveProjectRoot(join(gitOnly, 'nested', 'deeper'), {}).root === join(gitOnly, 'nested'));
+
+  const noConfig = join(WORK, 'root-git-only');
+  rmSync(noConfig, { recursive: true, force: true });
+  mkdirSync(join(noConfig, 'a', 'b'), { recursive: true });
+  mkdirSync(join(noConfig, '.git'), { recursive: true });
+  check('.git — запасной маркер', pr.resolveProjectRoot(join(noConfig, 'a', 'b'), {}).root === noConfig);
+
+  // Переменная харнесса точнее любых маркеров: он знает, какой каталог открыт.
+  check('CLAUDE_PROJECT_DIR перекрывает маркеры',
+    pr.resolveProjectRoot(deep, { CLAUDE_PROJECT_DIR: 'X:/задано/снаружи' }).root === 'X:/задано/снаружи');
+
+  // Маркеров нет вовсе — работаем от исходного каталога, но говорим об этом: «настройки нет»
+  // и «искали не там» иначе неотличимы.
+  const bare = join(WORK, 'root-bare', 'x');
+  mkdirSync(bare, { recursive: true });
+  check('без маркеров — исходный каталог и отметка via=start', pr.resolveProjectRoot(bare, {}).via === 'start');
+
+  // --- сквозная проверка: инструменты не зависят от рабочего каталога --------
+  // Ровно тот сценарий, на котором дефект и всплыл: одна и та же настройка читалась
+  // по-разному из корня и из подкаталога, а `gate status` из подкаталога отвечал
+  // «гейт не взведён» при взведённом гейте.
+  const proj = join(WORK, 'cwd-probe');
+  rmSync(proj, { recursive: true, force: true });
+  const sub = join(proj, 'src', 'cf');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(proj, '.1c-quality-gate.json'), JSON.stringify({ volume: { c1MaxLines: 99 } }), 'utf8');
+  mkdirSync(join(proj, '.claude', '.state'), { recursive: true });
+  writeFileSync(
+    join(proj, '.claude', '.state', 'qg-pending.json'),
+    JSON.stringify({ version: 2, sessions: { S: { armedAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', files: { 'src/cf/a.bsl': { kind: 'bsl', edits: 1 } } } } }),
+    'utf8'
+  );
+
+  const runIn = (cwd, script, args) => {
+    try {
+      // Переменную харнесса гасим намеренно: в оболочке она пуста, и проверять надо именно
+      // тот путь, по которому инструменты работают на самом деле.
+      const env = { ...process.env };
+      delete env.CLAUDE_PROJECT_DIR;
+      return execFileSync(process.execPath, [join(ROOT, script), ...args], { cwd, encoding: 'utf8', stdio: 'pipe', env });
+    } catch (e) {
+      return `${e.stdout || ''}${e.stderr || ''}`;
+    }
+  };
+
+  const cfgTop = runIn(proj, 'tools/config.mjs', ['show']);
+  const cfgSub = runIn(sub, 'tools/config.mjs', ['show']);
+  check('config: из корня видит настройку', cfgTop.includes('config=custom:volume'), cfgTop.trim().slice(-90));
+  check('config: из подкаталога та же строка следа', cfgSub.includes('config=custom:volume'), cfgSub.trim().slice(-90));
+  check('config: печатает, чем опознан корень', cfgSub.includes('Корень проекта:'), cfgSub.trim().slice(0, 90));
+
+  const gateTop = runIn(proj, 'tools/gate.mjs', ['status']);
+  const gateSub = runIn(sub, 'tools/gate.mjs', ['status']);
+  check('gate: из корня видит взведённый гейт', gateTop.includes('Сессия S'), gateTop.trim().slice(0, 90));
+  check('gate: из подкаталога видит тот же гейт', gateSub.includes('Сессия S'), gateSub.trim().slice(0, 90));
+}
+
+// ---------------------------------------------------------------------------
+section('Журнал прогонов — вердикт без прогона инструмента не принимается');
+
+{
+  const head =
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1, config=default]\n' +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n';
+  const tail = '[qg not_verified: dimension=compilation, reason=no_platform]\n';
+
+  const proj = join(WORK, 'journal-proj');
+  rmSync(proj, { recursive: true, force: true });
+  mkdirSync(proj, { recursive: true });
+  const env = { CLAUDE_PROJECT_DIR: proj };
+
+  const withHygiene = writeBytes(
+    'ev-journal-hygiene.md',
+    head + '[qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM], verdict=clean]\n' + tail
+  );
+
+  const before = run('tools/evidence-validator.mjs', [withHygiene, '--gate'], { env });
+  check('вердикт по проверке с инструментом без прогона отклонён', before.code === 2, before.out.trim().slice(0, 130));
+  check('названы и проверка, и инструмент',
+    before.out.includes('file-encoding') && before.out.includes('hygiene-check.mjs'), before.out.trim().slice(0, 160));
+
+  seedJournal(proj);
+  const after = run('tools/evidence-validator.mjs', [withHygiene, '--gate'], { env });
+  check('после прогона инструмента тот же след принят', after.code === 0, after.out.trim().slice(0, 130));
+
+  // Доказательство обязано быть не старше последней правки: прогон до правки описывает
+  // состояние, которого уже нет. Тот же принцип, по которому гейт снимает отметки
+  // проверенного при изменении файла.
+  mkdirSync(join(proj, '.claude', '.state'), { recursive: true });
+  writeFileSync(
+    join(proj, '.claude', '.state', 'qg-pending.json'),
+    JSON.stringify({ version: 2, sessions: { S: { armedAt: '2099-01-01T00:00:00Z', updatedAt: '2099-01-01T00:00:00Z', files: {} } } }),
+    'utf8'
+  );
+  const stale = run('tools/evidence-validator.mjs', [withHygiene, '--gate'], { env });
+  check('прогон старше последней правки не засчитывается', stale.code === 2, stale.out.trim().slice(0, 130));
+  check('сказано, что доказательство устарело', stale.out.includes('старше'), stale.out.trim().slice(0, 160));
+  rmSync(join(proj, '.claude', '.state', 'qg-pending.json'), { force: true });
+
+  // Проверки без инструмента журнала не требуют: требовать не с кого, и молчание здесь —
+  // единственная возможная форма.
+  const modelOnly = writeBytes(
+    'ev-journal-model.md',
+    head + '[qg applied: layer=arch, scope=module-responsibility, ids=[qg:ARCH-A1], verdict=clean]\n' + tail
+  );
+  const mo = run('tools/evidence-validator.mjs', [modelOnly, '--gate'], { env: { CLAUDE_PROJECT_DIR: join(WORK, 'journal-empty') } });
+  check('проверка без инструмента журнала не требует', mo.code === 0, mo.out.trim().slice(0, 130));
+
+  // Пропуск заявлен с причиной — доказывать нечего.
+  const skipped = writeBytes(
+    'ev-journal-skipped.md',
+    head + '[qg skipped: layer=hygiene, scope=file-encoding, reason=contour_not_installed]\n' + tail
+  );
+  const sk = run('tools/evidence-validator.mjs', [skipped, '--gate'], { env: { CLAUDE_PROJECT_DIR: join(WORK, 'journal-empty') } });
+  check('пропуск с причиной журнала не требует', sk.code === 0, sk.out.trim().slice(0, 130));
+
+  // --- инструменты печатают след и отмечаются сами ---------------------------
+  const hyProj = join(WORK, 'journal-tools');
+  rmSync(hyProj, { recursive: true, force: true });
+  mkdirSync(hyProj, { recursive: true });
+  const hyFile = join(hyProj, 'Module.bsl');
+  writeFileSync(hyFile, BOM + 'Процедура Пример()\r\nКонецПроцедуры\r\n', 'utf8');
+  const hy = run('tools/hygiene-check.mjs', [hyFile], { env: { CLAUDE_PROJECT_DIR: hyProj } });
+  check('hygiene-check печатает готовую запись следа', hy.out.includes('scope=file-encoding') && hy.out.includes('verdict=clean'), hy.out.trim().slice(-160));
+
+  const journalFile = join(hyProj, '.claude', '.state', 'qg-runs.jsonl');
+  check('hygiene-check отмечается в журнале', existsSync(journalFile), journalFile);
+  const rec = existsSync(journalFile) ? JSON.parse(readFileSync(journalFile, 'utf8').trim().split('\n').pop()) : {};
+  check('в записи журнала есть проверка и инструмент', rec.scope === 'file-encoding' && rec.tool === 'tools/hygiene-check.mjs', JSON.stringify(rec));
+
+  // Находка обязана менять вердикт в напечатанной строке, иначе след не зависит от результата.
+  const dashFile = join(hyProj, 'Тире.bsl');
+  writeFileSync(dashFile, BOM + 'Процедура Пример() // длинное \u2014 тире\r\nКонецПроцедуры\r\n', 'utf8');
+  const hyBad = run('tools/hygiene-check.mjs', [dashFile], { env: { CLAUDE_PROJECT_DIR: hyProj } });
+  check('находка отражена в вердикте следа', hyBad.out.includes('verdict=violation:qg:HYG-DASH'), hyBad.out.trim().slice(-160));
+
+  const uu = run('tools/xml/uuid-unique.mjs', [join(FIXTURES, 'config-dup-uuid')], { env: { CLAUDE_PROJECT_DIR: hyProj } });
+  check('uuid-unique печатает запись следа', uu.out.includes('scope=uuid-uniqueness'), uu.out.trim().slice(-160));
+  check('uuid-unique: вердикт по находкам', uu.out.includes('verdict=violation:qg:XML-UUID-DUP'), uu.out.trim().slice(-160));
+
+  const oc = run('tools/xml/orphan-check.mjs', [join(FIXTURES, 'config-clean')], { env: { CLAUDE_PROJECT_DIR: hyProj } });
+  check('orphan-check печатает запись следа', oc.out.includes('scope=registration-check'), oc.out.trim().slice(-160));
+}
+
+// ---------------------------------------------------------------------------
+section('Словарь проверок — закрытый список scope');
+
+{
+  const scopes = await import(pathToFileURL(join(ROOT, 'tools', 'evidence-scopes.mjs')).href);
+  const head =
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1, config=default]\n' +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n';
+  const tail = '[qg not_verified: dimension=compilation, reason=no_platform]\n';
+  const env = { CLAUDE_PROJECT_DIR: join(WORK, 'journal-empty') };
+
+  // Имя вне словаря принималось, пока проверялся только kebab-case. Так в отчёты попадали
+  // `static-diagnostics` и `lsp-diagnostics` — прямо из примеров в документации.
+  const unknown = writeBytes('ev-scope-unknown.md', head + '[qg applied: layer=code, scope=выдуманная-проверка, ids=[std454], verdict=clean]\n' + tail);
+  const ru = run('tools/evidence-validator.mjs', [unknown, '--gate'], { env });
+  check('имя вне словаря отклонено', ru.code === 2, ru.out.trim().slice(0, 130));
+
+  const renamed = writeBytes('ev-scope-renamed.md', head + '[qg applied: layer=code, scope=lsp-diagnostics, ids=[bslls:*], verdict=violation:bslls:X]\n');
+  const rr = run('tools/evidence-validator.mjs', [renamed, '--gate'], { env });
+  check('переименованное имя отклонено', rr.code === 2, rr.out.trim().slice(0, 130));
+  check('названо, как правильно', rr.out.includes('static-analysis'), rr.out.trim().slice(0, 160));
+
+  // Слой у проверки один. Запись с чужим слоем читается как проверка другого контура —
+  // и закрывает требование, которого не выполняла.
+  const wrongLayer = writeBytes('ev-scope-layer.md', head + '[qg applied: layer=arch, scope=file-encoding, ids=[qg:HYG-BOM], verdict=clean]\n' + tail);
+  const wl = run('tools/evidence-validator.mjs', [wrongLayer], { env });
+  check('несовпадение слоя названо', wl.out.includes('относится к слою hygiene'), wl.out.trim().slice(0, 160));
+
+  // Словарь — единственный источник: у каждой проверки с инструментом инструмент существует.
+  for (const [scope, tool] of Object.entries(scopes.TOOL_BACKED)) {
+    check(`инструмент проверки ${scope} на месте`, existsSync(join(ROOT, tool)), tool);
+  }
+  check('переименования ведут на существующие имена',
+    Object.values(scopes.RENAMED).every((v) => scopes.isKnownScope(v)), Object.values(scopes.RENAMED).join(', '));
+}
+
+// ---------------------------------------------------------------------------
+section('Непроанализированные файлы не выдаются за проверенные');
+
+{
+  const analyzer = await import(pathToFileURL(join(ROOT, 'tools', 'analyzer-run.mjs')).href);
+
+  // Движок отчитывается по файлам, которые видел. Файл, не встреченный в отчёте, не проверен
+  // ничем — раньше он просто исчезал, и общий вердикт выходил «clean».
+  const stdout = [
+    JSON.stringify({ type: 'file', path: 'src/cf/A.bsl', metrics: { functions: 2 }, diagnostics: [] }),
+  ].join('\n');
+  const norm = analyzer.normalizeBslAnalyzer(stdout, { root: '.', base: '.' });
+  check('разобранные файлы перечислены', norm.seen.has('src/cf/A.bsl'), [...norm.seen].join(', '));
+  check('чужих файлов в перечне нет', !norm.seen.has('src/cf/B.bsl'));
+
+  const ev = analyzer.toEvidence({
+    findings: [],
+    sentinelResult: { status: 'found' },
+    engine: 'bsl-analyzer',
+    version: '0.2.66',
+    unanalyzed: ['src/cf/B.bsl'],
+  });
+  check('непроверенные файлы заявлены записью not_verified',
+    ev.some((l) => l.includes('dimension=static-analysis') && l.includes('not_in_analyzer_report')), ev.join(' | ').slice(0, 200));
+
+  // Число непроверенных живёт в журнале, а не только в отчёте: заявление о полноте, взятое
+  // из проверяемого документа, ничего не подтверждает.
+  const proj = join(WORK, 'unanalyzed-proj');
+  rmSync(proj, { recursive: true, force: true });
+  mkdirSync(join(proj, '.claude', '.state'), { recursive: true });
+  writeFileSync(
+    join(proj, '.claude', '.state', 'qg-runs.jsonl'),
+    JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', scope: 'static-analysis', tool: 'tools/analyzer-run.mjs', verdict: 'clean', unanalyzed: 2 }) + '\n',
+    'utf8'
+  );
+  const env = { CLAUDE_PROJECT_DIR: proj };
+  const head =
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C1, files=2, archetypes=[none], driver=volume, resolved=code:L1, config=default]\n' +
+    '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found]\n' +
+    '[qg applied: layer=code, scope=static-analysis, ids=[bslls:*], verdict=clean]\n';
+  const silent = writeBytes('ev-unanalyzed-silent.md', head + '[qg not_verified: dimension=compilation, reason=no_platform]\n');
+  const rs = run('tools/evidence-validator.mjs', [silent, '--gate'], { env });
+  check('молчание о непроверенных файлах отклонено', rs.code === 2, rs.out.trim().slice(0, 150));
+  check('названо, сколько файлов не смотрели', rs.out.includes('2 из изменённых'), rs.out.trim().slice(0, 200));
+
+  const declared = writeBytes(
+    'ev-unanalyzed-declared.md',
+    head +
+      '[qg not_verified: dimension=static-analysis, reason=not_in_analyzer_report, files=2]\n' +
+      '[qg not_verified: dimension=compilation, reason=no_platform]\n'
+  );
+  const rd = run('tools/evidence-validator.mjs', [declared, '--gate'], { env });
+  check('заявленные непроверенные файлы принимаются', rd.code === 0, rd.out.trim().slice(0, 150));
 }
 
 // ---------------------------------------------------------------------------

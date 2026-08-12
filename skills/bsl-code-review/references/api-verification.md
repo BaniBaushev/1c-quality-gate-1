@@ -74,8 +74,8 @@
 Записать пропуск с точной причиной и продолжить остальные проверки:
 
 ```
-[qg skipped: layer=code, scope=api-signatures, planned=[platform:*], reason=platform_unavailable]
-[qg skipped: layer=code, scope=common-modules, planned=[rlm:*], reason=rlm_unavailable]
+[qg skipped: layer=code, scope=api-verification, planned=[platform:*], reason=platform_unavailable]
+[qg skipped: layer=code, scope=api-verification, planned=[rlm:*], reason=rlm_unavailable]
 ```
 
 Деградация допустима, замалчивание — нет. Отчёт, в котором не видно, что половина проверок не

@@ -58,9 +58,14 @@ node "$QG/tools/hygiene-check.mjs" <файл> [<файл> ...]
 ## Записи следа
 
 ```
-[qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM,qg:HYG-CTRL], verdict=clean]
+[qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM,qg:HYG-CTRL,qg:HYG-DASH,qg:HYG-ENCODING,qg:HYG-EOL], verdict=clean]
 [qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-DASH], verdict=violation:qg:HYG-DASH]
 ```
+
+**Эти строки печатает сам `hygiene-check.mjs`** — переноси его вывод, не составляй запись по
+прочтении находок. Инструмент отмечается в журнале прогонов, и валидатор следа сверяет с ним:
+вердикт без прогона снятие гейта не пройдёт. Чистый прогон перечисляет все пять правил,
+прогон с находками — по записи на сработавшее.
 
 Формат — `../quality-gate/references/evidence-format.md`.
 

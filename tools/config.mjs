@@ -19,6 +19,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { resolveProjectRoot } from './project-root.mjs';
 
 export const CONFIG_FILE = '.1c-quality-gate.json';
 
@@ -61,8 +62,13 @@ const ENV_MAP = [
   ['analyzer', 'autoInstall', 'QG_ANALYZER_AUTOINSTALL', (v) => v !== 'false'],
 ];
 
+/**
+ * Корень проекта. Не `process.cwd()`: настройка лежит в корне, а команду запускают откуда
+ * придётся — и тогда файл «не находится», а в след уходит `config=default` при живой
+ * настройке. Разрешение и его причины — в `project-root.mjs`.
+ */
 export function projectRoot(env = process.env) {
-  return env.CLAUDE_PROJECT_DIR || process.cwd();
+  return resolveProjectRoot(process.cwd(), env).root;
 }
 
 export function configPath(root = projectRoot()) {
@@ -281,6 +287,16 @@ function cmdShow(root, json) {
   const width = Math.max(...rows.map((r) => r[0].length));
   const valueWidth = Math.max(...rows.map((r) => r[1].length));
 
+  // Откуда взят корень — не техническая подробность: «настройки нет» и «искали не в том
+  // каталоге» дают одинаковый вывод, пока не сказано, какой каталог считался корнем.
+  const where = resolveProjectRoot(process.cwd());
+  const via =
+    where.via === 'env'
+      ? 'переменная CLAUDE_PROJECT_DIR'
+      : where.via === 'marker'
+        ? `по маркеру ${where.marker}`
+        : 'рабочий каталог — маркеров корня выше не найдено';
+  process.stdout.write(`Корень проекта: ${where.root} (${via})\n`);
   process.stdout.write(`Проектная настройка: ${state.path}\n`);
   if (!state.exists) {
     process.stdout.write('Файла нет — действуют умолчания. Создастся при первом взводе гейта либо по `init`.\n');
