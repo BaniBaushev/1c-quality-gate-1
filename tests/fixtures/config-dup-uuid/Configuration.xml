@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="00000000-0000-0000-0000-0000000000ff">
+    <Properties><Name>Тест</Name></Properties>
+    <ChildObjects>
+      <Catalog>Товары</Catalog>
+      <Catalog>Услуги</Catalog>
+      <BusinessProcess>Согласование</BusinessProcess>
+      <BusinessProcess>Утверждение</BusinessProcess>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>

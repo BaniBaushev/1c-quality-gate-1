@@ -2,8 +2,10 @@
 /**
  * Лексические проверки текстов запросов, встроенных в BSL.
  *
- * Сейчас проверка одна — `qg:QRY-ALIAS-SHADOWS-FIELD`: псевдоним источника, совпадающий с
- * именем колонки временной таблицы того же пакета.
+ * Проверок две:
+ *   - `qg:QRY-ALIAS-SHADOWS-FIELD` — псевдоним источника, совпадающий с именем колонки
+ *     временной таблицы того же пакета;
+ *   - `qg:QRY-TOP-WITHOUT-ORDER` — `ПЕРВЫЕ N` без `УПОРЯДОЧИТЬ ПО`.
  *
  * Зачем отдельный инструмент. Текст запроса — строковый литерал. Его не разбирает ни
  * статический анализатор, ни валидаторы XML, ни сборка бинарника: тела модулей
@@ -61,6 +63,9 @@ const RE_UNION = word('ОБЪЕДИНИТЬ(?:\\s+ВСЕ)?');
 const RE_AFTER_SOURCES = word('ГДЕ|СГРУППИРОВАТЬ|ИМЕЮЩИЕ|УПОРЯДОЧИТЬ|ИТОГИ|ИНДЕКСИРОВАТЬ|АВТОУПОРЯДОЧИВАНИЕ|ДЛЯ');
 /** Модификаторы между `ВЫБРАТЬ` и списком полей. */
 const RE_SELECT_MODIFIERS = new RegExp(`^\\s*(?:(?:${['РАЗРЕШЕННЫЕ', 'РАЗЛИЧНЫЕ'].join('|')})\\s+)*(?:ПЕРВЫЕ\\s+\\d+\\s+)?`, 'iu');
+const RE_TOP = word('ПЕРВЫЕ');
+const RE_ORDER = word('УПОРЯДОЧИТЬ');
+const RE_AUTOORDER = word('АВТОУПОРЯДОЧИВАНИЕ');
 
 /**
  * Глубина вложенности скобок для каждой позиции текста.
@@ -275,6 +280,51 @@ function parseSources(branch) {
   return { aliases, sourcesText, sourcesStart: start };
 }
 
+/**
+ * `ПЕРВЫЕ N` без `УПОРЯДОЧИТЬ ПО`.
+ *
+ * Какие именно N строк вернёт платформа, не определено: порядок задаёт СУБД, и он меняется
+ * между прогонами, между версиями и между движками. Код, отобравший «первые 10 договоров»,
+ * на тестовой базе работает, а в продуктиве начинает выдавать другие десять.
+ *
+ * Проверка на уровне запроса пакета, а не ветки: в объединении `УПОРЯДОЧИТЬ ПО` относится ко
+ * всему результату и стоит в конце последней ветки.
+ *
+ * Законные формы, на которых правило молчит:
+ *   - `ПЕРВЫЕ 1` — проверка существования: результат используется как «пусто или нет», и
+ *     какая именно строка пришла, значения не имеет;
+ *   - `АВТОУПОРЯДОЧИВАНИЕ` — порядок задан, пусть и неявно.
+ *
+ * `ПОМЕСТИТЬ` законной формой НЕ является, хотя выглядит похоже: порядок строк внутри
+ * временной таблицы потребителю действительно не виден, но отбор N строк произошёл раньше
+ * помещения — недетерминирован уже он. Это самый частый реальный случай: предварительный
+ * отбор в `ВТ_*` перед соединением.
+ */
+function checkTopWithoutOrder(source, literal, query) {
+  const depth = depthMap(query.text);
+  if (matchesAtTopLevel(query.text, RE_ORDER, depth).length > 0) return [];
+  if (matchesAtTopLevel(query.text, RE_AUTOORDER, depth).length > 0) return [];
+
+  const findings = [];
+  for (const top of matchesAtTopLevel(query.text, RE_TOP, depth)) {
+    const limit = query.text.slice(top.index + top.text.length).match(/^\s*(\d+)/u);
+    if (!limit) continue;
+    if (Number(limit[1]) <= 1) continue;
+
+    const pos = literal.start + query.offset + top.index;
+    findings.push({
+      severity: 'warn',
+      rule: 'qg:QRY-TOP-WITHOUT-ORDER',
+      line: lineAt(source, pos),
+      limit: Number(limit[1]),
+      message:
+        `«ПЕРВЫЕ ${limit[1]}» без «УПОРЯДОЧИТЬ ПО»: какие именно ${limit[1]} строк вернутся, ` +
+        'не определено — набор меняется между прогонами и между СУБД',
+    });
+  }
+  return findings;
+}
+
 /** Номер строки в файле по абсолютному смещению. */
 function lineAt(source, pos) {
   let line = 1;
@@ -295,6 +345,8 @@ export function lintSource(source) {
     const temps = new Map(); // имя ВТ в нижнем регистре → { name, columns }
 
     for (const query of splitBatch(masked)) {
+      findings.push(...checkTopWithoutOrder(source, literal, query));
+
       const branches = splitUnionBranches(query);
 
       for (const branch of branches) {
@@ -355,12 +407,25 @@ function checkFile(path) {
   return lintSource(readFileSync(path, 'utf8').replace(/^﻿/, ''));
 }
 
-function evidenceBlock(errors, warns, queriesSeen) {
-  if (!queriesSeen) {
-    return '[qg skipped: layer=code, scope=query-alias-shadowing, reason=not_applicable]';
-  }
-  const verdict = errors || warns ? 'violation:qg:QRY-ALIAS-SHADOWS-FIELD' : 'clean';
-  return `[qg applied: layer=code, scope=query-alias-shadowing, ids=[qg:QRY-ALIAS-SHADOWS-FIELD], verdict=${verdict}]`;
+/**
+ * По записи следа на каждое правило.
+ *
+ * Одной строкой на весь инструмент обойтись нельзя: `scope` в следе — это «что именно
+ * проверялось», и вердикт по одному правилу ничего не говорит о другом. Общая строка про
+ * затенение псевдонима, выставленная по находке о `ПЕРВЫЕ N`, — ровно тот отчёт о
+ * непроведённой проверке, против которого написан весь формат следа.
+ */
+const EVIDENCE_SCOPES = [
+  { scope: 'query-alias-shadowing', id: 'qg:QRY-ALIAS-SHADOWS-FIELD' },
+  { scope: 'query-top-order', id: 'qg:QRY-TOP-WITHOUT-ORDER' },
+];
+
+function evidenceBlock(findings, queriesSeen) {
+  return EVIDENCE_SCOPES.map(({ scope, id }) => {
+    if (!queriesSeen) return `[qg skipped: layer=code, scope=${scope}, reason=not_applicable]`;
+    const hit = findings.some((f) => f.rule === id);
+    return `[qg applied: layer=code, scope=${scope}, ids=[${id}], verdict=${hit ? `violation:${id}` : 'clean'}]`;
+  }).join('\n');
 }
 
 function main(argv) {
@@ -377,7 +442,7 @@ function main(argv) {
   const errors = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'error').length, 0);
   const warns = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'warn').length, 0);
   const queriesSeen = files.some((f) => existsSync(f) && extractQueryLiterals(readFileSync(f, 'utf8')).length > 0);
-  const evidence = evidenceBlock(errors, warns, queriesSeen);
+  const evidence = evidenceBlock(report.flatMap((r) => r.findings), queriesSeen);
 
   if (asJson) {
     process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');

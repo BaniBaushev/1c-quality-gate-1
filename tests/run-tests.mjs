@@ -66,8 +66,11 @@ function section(title) {
 const BOM = String.fromCharCode(0xfeff);
 const GROUP_SEPARATOR = String.fromCharCode(0x1d);
 function writeBytes(name, content) {
-  mkdirSync(WORK, { recursive: true });
   const p = join(WORK, name);
+  // Подкаталог в имени — способ задать фикстуре нужное ИМЯ ФАЙЛА: проверка транзакций в
+  // обработчике смотрит на него (ObjectModule.bsl против модуля формы), и два таких файла
+  // обязаны уживаться рядом.
+  mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, content, 'utf8');
   return p;
 }
@@ -341,6 +344,177 @@ section('Запросы — НЕ придирается к корректным 
 }
 
 // ---------------------------------------------------------------------------
+section('Запросы — ПЕРВЫЕ N без УПОРЯДОЧИТЬ ПО');
+
+// Порядок строк без явной сортировки задаёт СУБД: набор из N строк меняется между прогонами
+// и между движками. На тестовой базе выборка «первых десяти» стабильна, в продуктиве — нет.
+{
+  const f = bsl('qry-top-plain.bsl', [
+    'ВЫБРАТЬ ПЕРВЫЕ 10',
+    '|	Контрагенты.Ссылка КАК Ссылка',
+    '|ИЗ',
+    '|	Справочник.Контрагенты КАК Контрагенты',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('ПЕРВЫЕ без порядка — находка', r.out.includes('QRY-TOP-WITHOUT-ORDER'), r.out.trim().slice(0, 140));
+  check('находка не блокирующая (код 1)', r.code === 1, `код ${r.code}`);
+  check('в записи следа свой scope', r.out.includes('scope=query-top-order'), r.out.trim().slice(0, 200));
+}
+{
+  const f = bsl('qry-top-ordered.bsl', [
+    'ВЫБРАТЬ ПЕРВЫЕ 10',
+    '|	Контрагенты.Ссылка КАК Ссылка',
+    '|ИЗ',
+    '|	Справочник.Контрагенты КАК Контрагенты',
+    '|УПОРЯДОЧИТЬ ПО',
+    '|	Контрагенты.Наименование',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('порядок задан — не придирается', r.code === 0, r.out.trim().slice(0, 140));
+}
+{
+  // Законная форма: результат используется как «пусто или нет», какая строка пришла — неважно.
+  const f = bsl('qry-top-one.bsl', [
+    'ВЫБРАТЬ ПЕРВЫЕ 1',
+    '|	Заказы.Ссылка КАК Ссылка',
+    '|ИЗ',
+    '|	Документ.ЗаказКлиента КАК Заказы',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('ПЕРВЫЕ 1 — проверка существования, не находка', r.code === 0, r.out.trim().slice(0, 140));
+}
+{
+  const f = bsl('qry-top-auto.bsl', [
+    'ВЫБРАТЬ ПЕРВЫЕ 5',
+    '|	Заказы.Ссылка КАК Ссылка',
+    '|ИЗ',
+    '|	Документ.ЗаказКлиента КАК Заказы',
+    '|АВТОУПОРЯДОЧИВАНИЕ',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('АВТОУПОРЯДОЧИВАНИЕ — не находка', r.code === 0, r.out.trim().slice(0, 140));
+}
+{
+  // ПОМЕСТИТЬ законной формой не является: отбор N строк произошёл ДО помещения. Это самый
+  // частый реальный случай — предварительный отбор в ВТ перед соединением.
+  const f = bsl('qry-top-into.bsl', [
+    'ВЫБРАТЬ ПЕРВЫЕ 100',
+    '|	Товары.Ссылка КАК Номенклатура',
+    '|ПОМЕСТИТЬ ВТ_Ключи',
+    '|ИЗ',
+    '|	Справочник.Номенклатура КАК Товары',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('ПЕРВЫЕ N с ПОМЕСТИТЬ — всё равно находка', r.out.includes('QRY-TOP-WITHOUT-ORDER'), r.out.trim().slice(0, 140));
+}
+{
+  // В объединении УПОРЯДОЧИТЬ ПО относится ко всему результату и стоит в конце последней
+  // ветки: проверка на уровне ветки дала бы ложную находку на каждом таком запросе.
+  const f = bsl('qry-top-union.bsl', [
+    'ВЫБРАТЬ ПЕРВЫЕ 10',
+    '|	Товары.Ссылка КАК Ссылка',
+    '|ИЗ',
+    '|	Справочник.Номенклатура КАК Товары',
+    '|ОБЪЕДИНИТЬ ВСЕ',
+    '|ВЫБРАТЬ',
+    '|	Услуги.Ссылка',
+    '|ИЗ',
+    '|	Справочник.Услуги КАК Услуги',
+    '|УПОРЯДОЧИТЬ ПО',
+    '|	Ссылка',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('порядок в конце объединения — не находка', r.code === 0, r.out.trim().slice(0, 140));
+}
+
+// ---------------------------------------------------------------------------
+section('Транзакция внутри обработчика с неявной транзакцией');
+
+// Платформа открывает транзакцию вокруг записи, удаления и проведения. Вложенных не
+// поддерживает: ОтменитьТранзакцию внутри обработчика отменяет ВНЕШНЮЮ целиком, и падение
+// случается в месте, не связанном с причиной (#std783 п.1.4).
+{
+  const f = writeBytes('txn-nested/ObjectModule.bsl', [
+    'Процедура ОбработкаПроведения(Отказ, РежимПроведения)',
+    '\tНачатьТранзакцию();',
+    '\tПопытка',
+    '\t\tДвижения.Записать();',
+    '\t\tЗафиксироватьТранзакцию();',
+    '\tИсключение',
+    '\t\tОтменитьТранзакцию();',
+    '\tКонецПопытки;',
+    'КонецПроцедуры',
+  ].join('\n'));
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('транзакция в ОбработкаПроведения — находка', r.out.includes('BSL-TXN-IN-HANDLER'), r.out.trim().slice(0, 160));
+  check('назван обработчик и стандарт', r.out.includes('ОбработкаПроведения') && r.out.includes('#std783'));
+  check('находка не блокирующая (код 1)', r.code === 1, `код ${r.code}`);
+}
+{
+  // Комментарий и строковый литерал маскируются: иначе закомментированный вызов и текст
+  // сообщения давали бы находку — ложную и потому дорогую.
+  const f = writeBytes('txn-masked/ObjectModule.bsl', [
+    'Процедура ПриЗаписи(Отказ)',
+    '\t// НачатьТранзакцию();',
+    '\tТекст = "НачатьТранзакцию() в тексте сообщения";',
+    'КонецПроцедуры',
+  ].join('\n'));
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('комментарий и литерал не дают находки', r.code === 0, r.out.trim().slice(0, 160));
+}
+{
+  // Метод, который не является обработчиком события, открывает транзакцию штатно.
+  const f = writeBytes('txn-plain/ObjectModule.bsl', [
+    'Функция ЗаписатьПорцию() Экспорт',
+    '\tНачатьТранзакцию();',
+    '\tВозврат Истина;',
+    'КонецФункции',
+  ].join('\n'));
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('обычный метод модуля — не находка', r.code === 0, r.out.trim().slice(0, 160));
+}
+{
+  // ПередЗаписью формы — другое событие, транзакции вокруг него нет. Без различения модулей
+  // проверка срабатывала бы на каждой форме с таким обработчиком.
+  const f = writeBytes('txn-form/Form/Ext/Form/Module.bsl', [
+    '&НаКлиенте',
+    'Процедура ПередЗаписью(Отказ, ПараметрыЗаписи)',
+    '\tНачатьТранзакцию();',
+    'КонецПроцедуры',
+  ].join('\n'));
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('модуль формы — вне области проверки', r.code === 0, r.out.trim().slice(0, 160));
+  check('неприменимость заявлена записью следа',
+    r.out.includes('[qg skipped: layer=code, scope=transaction-nesting, reason=not_applicable]'),
+    r.out.trim().slice(0, 200));
+}
+{
+  // Набор записей регистра пишется в собственной транзакции платформы так же, как объект.
+  const f = writeBytes('txn-recordset/RecordSetModule.bsl', [
+    'Процедура ПередЗаписью(Отказ, Замещение)',
+    '\tНачатьТранзакцию();',
+    'КонецПроцедуры',
+  ].join('\n'));
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('модуль набора записей проверяется наравне с модулем объекта', r.out.includes('BSL-TXN-IN-HANDLER'),
+    r.out.trim().slice(0, 160));
+}
+{
+  // Запись следа печатает инструмент, а принимает валидатор: разъедься эти два места —
+  // строку начнут сочинять руками.
+  const f = writeBytes('txn-evidence/ObjectModule.bsl', 'Процедура ПриЗаписи(Отказ)\n\tА = 1;\nКонецПроцедуры\n');
+  const printed = run('tools/bsl-lint.mjs', [f]).out.split('## quality evidence')[1]?.trim() || '';
+  const report = writeBytes('ev-from-bsl-lint.md',
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C1, files=1, archetypes=[object-event], driver=archetype:object-event, resolved=code:L1, config=default]\n' +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n' +
+    printed + '\n' +
+    '[qg not_verified: dimension=compilation, reason=no_platform]\n');
+  const r = run('tools/evidence-validator.mjs', [report, '--gate']);
+  check('запись следа из bsl-lint проходит валидатор', r.code === 0, `${printed} → ${r.out.trim().slice(0, 140)}`);
+}
+
+// ---------------------------------------------------------------------------
 section('Сверка «диск ↔ состав»');
 
 {
@@ -357,6 +531,77 @@ section('Сверка «диск ↔ состав»');
   const r = run('tools/xml/orphan-check.mjs', [join(FIXTURES, 'config-missing')]);
   check('отсутствующий файл найден', r.out.includes('ОТСУТСТВУЮТ'), r.out.trim().slice(0, 120));
   check('отсутствующий файл даёт код 2', r.code === 2);
+}
+
+// ---------------------------------------------------------------------------
+section('Валидатор пакета — состав компонентов');
+
+// Раньше проверялись только навыки. Субагент с испорченным frontmatter не поднимается, а
+// контуры трактуют «субагента нет в среде» как законную деградацию с записью skipped: дефект
+// пакета выглядит как штатное окружение пользователя и никем не расследуется.
+{
+  const pkg = join(WORK, 'pkg-broken');
+  writeBytes('pkg-broken/agents/разведчик.md', '---\nname: другое-имя\ndescription: тест\nmodel: gpt\n---\n\nтело\n');
+  writeBytes('pkg-broken/commands/проба.md', '---\nargumentHint: подсказка\n---\n\nтело\n');
+  writeBytes('pkg-broken/skills/big-skill/SKILL.md', `---\nname: big-skill\ndescription: тест\n---\n\n${'т'.repeat(40000)}\n`);
+  writeBytes('pkg-broken/skills/big-skill/references/anchors.md', 'раздел «Нет такого» навыка `big-skill`\n');
+  writeBytes('pkg-broken/skills/big-skill/references/links.md', 'см. `references/no-such.md`\n');
+
+  const r = run('tools/validate-package.mjs', ['--root', pkg]);
+  check('имя агента сверяется с именем файла', r.out.includes('не совпадает с именем файла'), r.out.trim().slice(0, 200));
+  check('модель агента вне набора — ошибка', r.out.includes('model "gpt"'), r.out.trim().slice(0, 200));
+  check('у агента требуется tools', /нет поля tools/.test(r.out), r.out.trim().slice(0, 200));
+  check('camelCase-поле команды названо с исправлением',
+    r.out.includes('"argumentHint" не читается') && r.out.includes('argument-hint'), r.out.trim().slice(0, 200));
+  check('навык сверх предела размера — ошибка', /при пределе \d+/.test(r.out), r.out.trim().slice(0, 200));
+  check('ссылка на несуществующий раздел навыка найдена', r.out.includes('нет раздела «Нет такого»'), r.out.trim().slice(0, 200));
+  // Битая ссылка была предупреждением, а предупреждения не влияли на код возврата: проверка
+  // существовала и ничего не запрещала.
+  check('битая ссылка на файл — ошибка, а не предупреждение',
+    r.out.includes('ссылка на несуществующий файл') && r.out.includes('ОШИБКА'), r.out.trim().slice(0, 200));
+  check('испорченный пакет даёт ненулевой код', r.code === 1, `код ${r.code}`);
+}
+{
+  // Ложное срабатывание, которое проверка уже один раз дала: ссылка внутри цитаты переносится
+  // на следующую строку, и та начинается с «> ».
+  const pkg = join(WORK, 'pkg-quote');
+  writeBytes('pkg-quote/skills/orchestrator/SKILL.md', '---\nname: orchestrator\ndescription: тест\n---\n\n## Путь к инструментам плагина (`$QG`)\n\nтело\n');
+  writeBytes('pkg-quote/skills/orchestrator/references/quote.md',
+    '> подробности — см. раздел «Путь к инструментам\n> плагина» навыка `orchestrator`.\n');
+  const r = run('tools/validate-package.mjs', ['--root', pkg]);
+  check('перенос ссылки в цитате не даёт ложной находки', !r.out.includes('нет раздела'), r.out.trim().slice(0, 200));
+}
+{
+  const r = run('tools/validate-package.mjs', []);
+  check('собственный пакет проходит валидатор', r.code === 0, r.out.trim().slice(0, 200));
+}
+
+// ---------------------------------------------------------------------------
+section('Уникальность UUID объектов метаданных');
+
+// Скопированный вместе с uuid объект платформа при загрузке либо отвергает, либо оставляет
+// один из двух — второй исчезает бесшумно. Валидаторы структуры разбирают каждый файл
+// поодиночке и совпадения с соседним файлом не видят в принципе.
+{
+  const r = run('tools/xml/uuid-unique.mjs', [join(FIXTURES, 'config-clean')]);
+  check('чистая выгрузка — дублей нет', r.code === 0, `код ${r.code}: ${r.out.trim().slice(0, 120)}`);
+}
+{
+  const r = run('tools/xml/uuid-unique.mjs', [join(FIXTURES, 'config-dup-uuid')]);
+  check('дубль между файлами найден', r.out.includes('Товары.xml | Catalogs/Услуги.xml'), r.out.trim().slice(0, 160));
+  check('дубль внутри одного файла найден', /Товары\.xml ×2/.test(r.out), r.out.trim().slice(0, 160));
+  check('дубль даёт код 2', r.code === 2, `код ${r.code}`);
+
+  // Контр-сигнал, измеренный на полной выгрузке УТ: единственные законные повторы uuid
+  // живут в картах маршрута бизнес-процессов. Без этого исключения проверка давала бы
+  // находку на каждой типовой конфигурации.
+  check('карта маршрута не даёт находки', !r.out.includes('0000000000aa'), r.out.trim().slice(0, 160));
+  check('пропущенные схемы названы явно', r.out.includes('GraphicalSchema'), r.out.trim().slice(0, 160));
+}
+{
+  const r = run('tools/xml/uuid-unique.mjs', [join(WORK, 'нет-такого-каталога')]);
+  check('несуществующий каталог назван, а не свален в traceback',
+    /не найден/i.test(r.out) && !/at .*uuid-unique/.test(r.out), r.out.trim().slice(0, 120));
 }
 
 // ---------------------------------------------------------------------------
@@ -949,6 +1194,9 @@ const mustContain = [
   ['shared/routing-contract.md', 'радиус', 'граница контуров по радиусу правки'],
   ['skills/bsl-code-review/SKILL.md', 'НЕ РАЗОБРАНО', 'неразобранные файлы называются явно'],
   ['skills/xml-structure-review/SKILL.md', '-Path', 'универсальное имя параметра валидаторов XML'],
+  ['skills/xml-structure-review/SKILL.md', 'uuid-unique.mjs', 'контур прогоняет проверку уникальности UUID'],
+  ['skills/xml-structure-review/SKILL.md', 'Графические схемы не читаются', 'исключение для карт маршрута названо, а не подразумевается'],
+  ['agents/xml-runner.md', 'uuid-unique.mjs', 'субагент знает про проверку UUID'],
   ['skills/xml-structure-review/SKILL.md', 'reason=lxml_unavailable', 'падение валидатора без lxml — не находка в XML'],
   // Контр-сигналы прав и семантика заимствования: без них контур выпускает находки на файлах,
   // где «дефект» — свойство модели прав платформы, а не упущение автора.
@@ -959,6 +1207,19 @@ const mustContain = [
   ['skills/xml-structure-review/SKILL.md', 'cfe-object-belonging.md', 'контур ссылается на семантику заимствования'],
   // Дефект, проходящий валидацию: «OK» валидатора здесь не вердикт о работоспособности.
   ['skills/xml-structure-review/SKILL.md', 'AutoCommandBar', 'зависание загрузки на командной панели таблицы'],
+  // Транзакция внутри неявной транзакции обработчика: отменяется ВНЕШНЯЯ, и падает потом
+  // не то место, где ошибка. Правило и инструмент обязаны быть названы вместе — иначе
+  // находка инструмента остаётся без объяснения «как чинить».
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'qg:BSL-TXN-IN-HANDLER', 'транзакция в обработчике — пункт каталога'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', '#std783 п. 1.4', 'у пункта про вложенную транзакцию есть якорь стандарта'],
+  ['skills/bsl-code-review/references/checklist-code.md', 'qg:BSL-TXN-IN-HANDLER', 'вложенная транзакция — пункт чеклиста'],
+  ['skills/bsl-code-review/SKILL.md', 'bsl-lint.mjs', 'контур прогоняет проверку транзакций'],
+  ['agents/bsl-verifier.md', 'bsl-lint.mjs', 'верификатор прогоняет проверку транзакций'],
+  // ПЕРВЫЕ N без порядка: набор строк меняется между прогонами и СУБД. Обе половины важны —
+  // и правило, и его законные формы, иначе проверка начнёт ругаться на проверку существования.
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'qg:QRY-TOP-WITHOUT-ORDER', 'ПЕРВЫЕ N без порядка — пункт каталога'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'Законные формы', 'у правила про ПЕРВЫЕ N названы контр-сигналы'],
+  ['skills/bsl-code-review/references/checklist-code.md', 'qg:QRY-TOP-WITHOUT-ORDER', 'ПЕРВЫЕ N без порядка — пункт чеклиста'],
   ['skills/bsl-code-review/references/checklist-code.md', '#std659', 'избыточные блокировки'],
   ['skills/bsl-code-review/references/checklist-code.md', '#std661', 'блокирующее чтение остатков в начале транзакции'],
   ['skills/bsl-code-review/references/checklist-code.md', '#std450', 'порядок записи движений'],

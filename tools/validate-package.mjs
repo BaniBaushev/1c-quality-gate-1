@@ -15,13 +15,26 @@ import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * Корень проверяемого пакета. По умолчанию — сам плагин; `--root` нужен тестам, чтобы
+ * прогнать проверки на заведомо испорченном дереве. Без этого правила валидатора
+ * проверялись бы только фактом «на нашем репозитории молчит», а молчание сломанной
+ * проверки неотличимо от молчания исправной.
+ */
+const rootArg = process.argv.indexOf('--root');
+const ROOT = rootArg === -1 ? join(dirname(fileURLToPath(import.meta.url)), '..') : process.argv[rootArg + 1];
 
 const problems = [];
 const fail = (where, message) => problems.push({ severity: 'error', where, message });
 const warn = (where, message) => problems.push({ severity: 'warn', where, message });
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.remember', '.state', '.qg-analyzer']);
+
+/** Предел размера SKILL.md: навык грузится целиком, и его объём — это контекст на каждый прогон. */
+const SKILL_SIZE_LIMIT = 32_768;
+
+/** Модели субагентов. Опечатка здесь не диагностируется средой — субагент просто не поднимется. */
+const AGENT_MODELS = new Set(['haiku', 'sonnet', 'opus', 'inherit']);
 
 /** Все файлы репозитория, кроме служебных. Запасной обход, когда git недоступен. */
 function walk(dir, acc = []) {
@@ -172,6 +185,59 @@ for (const f of skillFiles) {
   if (nameMatch && nameMatch[1] !== dirName) {
     fail(rel(f), `name "${nameMatch[1]}" не совпадает с именем каталога "${dirName}"`);
   }
+
+  // Навык грузится целиком, и самый крупный из них — оркестратор — попадает в контекст при
+  // каждом снятии гейта. Предел не запрет, а сигнал: если файл перерос его, содержимое пора
+  // выносить в references, которые читаются по необходимости.
+  const size = Buffer.byteLength(text, 'utf8');
+  if (size > SKILL_SIZE_LIMIT) {
+    fail(rel(f), `${size} байт при пределе ${SKILL_SIZE_LIMIT}: вынеси часть в references/`);
+  }
+}
+
+// --- 4б. Субагенты и команды: frontmatter ------------------------------------
+// Проверялись только навыки. Между тем субагент с испорченным frontmatter просто не
+// поднимается, а контуры трактуют «субагента нет в среде» как законную деградацию с записью
+// skipped: дефект пакета выглядит как штатное окружение пользователя и не расследуется.
+for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)))) {
+  const text = readFileSync(f, 'utf8');
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) {
+    fail(rel(f), 'нет frontmatter');
+    continue;
+  }
+  const fm = m[1];
+  for (const key of ['name', 'description', 'tools']) {
+    if (!new RegExp(`^${key}:\\s*\\S`, 'm').test(fm)) fail(rel(f), `во frontmatter нет поля ${key}`);
+  }
+
+  const fileName = rel(f).split('/').pop().replace(/\.md$/, '');
+  const nameMatch = fm.match(/^name:\s*(\S+)/m);
+  if (nameMatch && nameMatch[1] !== fileName) {
+    fail(rel(f), `name "${nameMatch[1]}" не совпадает с именем файла "${fileName}"`);
+  }
+
+  const modelMatch = fm.match(/^model:\s*(\S+)/m);
+  if (modelMatch && !AGENT_MODELS.has(modelMatch[1])) {
+    fail(rel(f), `model "${modelMatch[1]}" вне набора ${[...AGENT_MODELS].join(', ')}`);
+  }
+}
+
+for (const f of files.filter((p) => /(^|\/)commands\/[^/]+\.md$/.test(rel(p)))) {
+  const text = readFileSync(f, 'utf8');
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) {
+    fail(rel(f), 'нет frontmatter');
+    continue;
+  }
+  const fm = m[1];
+  if (!/^description:\s*\S/m.test(fm)) fail(rel(f), 'во frontmatter нет поля description');
+
+  // Имена полей у команд пишутся через дефис. camelCase из других сред не читается: команда
+  // запускается, но без подсказки об аргументах и без объявленных инструментов.
+  for (const [stale, correct] of [['argumentHint', 'argument-hint'], ['allowedTools', 'allowed-tools']]) {
+    if (new RegExp(`^${stale}:`, 'm').test(fm)) fail(rel(f), `поле "${stale}" не читается — правильно "${correct}"`);
+  }
 }
 
 // --- 5. Ссылки на файлы references -------------------------------------------
@@ -187,8 +253,50 @@ for (const f of files.filter((f) => f.endsWith('.md'))) {
     if (!candidates.some(existsSync)) {
       // Ссылки на файлы проекта пользователя (не плагина) не проверяем.
       if (/^(src|docs|openspec|tools\/xml)\//.test(target)) continue;
-      warn(rel(f), `ссылка на несуществующий файл: ${target}`);
+      // Раньше это было предупреждением, а предупреждения не влияли на код возврата: проверка
+      // существовала, но ничего не запрещала, и битая ссылка спокойно уезжала в релиз.
+      fail(rel(f), `ссылка на несуществующий файл: ${target}`);
     }
+  }
+}
+
+// --- 5б. Ссылки на разделы других навыков ------------------------------------
+// Форма «раздел «Название» навыка `имя`» — единственная в своде, где название раздела
+// указывает на ЧУЖОЙ файл. Переименование заголовка её не ломает заметно: инструкция
+// продолжает выглядеть исправной и просто ведёт в никуда.
+const headingsCache = new Map();
+function headingsOf(path) {
+  if (!headingsCache.has(path)) {
+    const set = new Set();
+    if (existsSync(path)) {
+      for (const line of readFileSync(path, 'utf8').split('\n')) {
+        const h = line.match(/^#{1,6}\s+(.+?)\s*$/);
+        if (h) set.add(h[1].replace(/[`*_]/g, '').trim());
+      }
+    }
+    headingsCache.set(path, set);
+  }
+  return headingsCache.get(path);
+}
+
+for (const f of files.filter((p) => p.endsWith('.md'))) {
+  const text = readFileSync(f, 'utf8');
+  // Разделители пишутся как `[\s>]`, а не `\s`: ссылка может быть внутри цитаты и перенесена
+  // на следующую строку, где строка начинается с «> ». Без этого проверка находит дефект в
+  // исправной ссылке — ровно та ложная находка, которой быть не должно.
+  const re = /раздел[а-я]*[\s>]+«([^»]+)»[\s>]+(?:в[\s>]+)?навыка?[а-я]*[\s>]+`([a-z0-9-]+)`/giu;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const heading = m[1].replace(/[\s>]+/g, ' ').trim();
+    const skill = m[2];
+    const target = join(ROOT, 'skills', skill, 'SKILL.md');
+    if (!existsSync(target)) {
+      fail(rel(f), `ссылка на раздел несуществующего навыка: ${skill}`);
+      continue;
+    }
+    // Заголовок может нести уточнение в скобках: «Путь к инструментам плагина (`$QG`)».
+    const found = [...headingsOf(target)].some((h) => h === heading || h.startsWith(`${heading} (`));
+    if (!found) fail(rel(f), `в навыке ${skill} нет раздела «${heading}»`);
   }
 }
 
