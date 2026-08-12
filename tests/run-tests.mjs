@@ -616,9 +616,13 @@ const PY_VALIDATORS = ['cf', 'cfe', 'epf', 'form', 'interface', 'meta', 'mxl', '
 const pyTool = (name) => join(ROOT, 'tools', 'xml', `${name}-validate.py`);
 
 /** Запускает python-валидатор, возвращает код возврата и объединённый вывод. */
-function runPy(script, args) {
+function runPy(script, args, opts = {}) {
   try {
-    const out = execFileSync('python', [script, ...args], { encoding: 'utf8', stdio: 'pipe' });
+    const out = execFileSync('python', [script, ...args], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      env: { ...process.env, ...(opts.env || {}) },
+    });
     return { code: 0, out };
   } catch (e) {
     return { code: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` };
@@ -730,6 +734,42 @@ if (python.ok) {
   // переносила модель — то есть проверка с инструментом заканчивалась записью от руки.
   check('валидатор печатает запись следа', intactNode.out.includes('scope=structure-validation'), intactNode.out.trim().slice(-140));
   check('вердикт следа отражает находки', dupNode.out.includes('verdict=violation:qg:XML-STRUCT'), dupNode.out.trim().slice(-140));
+
+  // Отчитываются ВСЕ валидаторы, а не один. Контур называет проверку структуры любого файла
+  // метаданных одним именем `structure-validation`, и валидатор следа сверяет по имени: если
+  // бы отмечался только meta-validate, след после проверки формы или роли отвергался бы как
+  // «инструмент не запускался» — ложная находка на добросовестно выполненной работе.
+  const pyProj = join(WORK, 'py-journal');
+  rmSync(pyProj, { recursive: true, force: true });
+  mkdirSync(pyProj, { recursive: true });
+  for (const [name, path] of [
+    ['form', xml('form', 'valid.xml')],
+    ['role', join(FIXTURES, 'role-min', 'Roles', 'QG_ТестоваяРоль')],
+    ['skd', xml('skd', 'valid.xml')],
+    ['epf', xml('epf', 'valid')],
+    ['mxl', xml('mxl', 'valid.xml')],
+    ['cf', xml('cf', 'valid')],
+    ['cfe', xml('cfe', 'valid')],
+    ['interface', xml('interface', 'valid.xml')],
+    ['subsystem', xml('subsystem', 'valid.xml')],
+  ]) {
+    const r = runPy(pyTool(name), ['-Path', path], { env: { CLAUDE_PROJECT_DIR: pyProj } });
+    check(`${name}: печатает запись следа`, r.out.includes('scope=structure-validation'), r.out.trim().slice(-120));
+  }
+
+  // Импорт журнала защищён try/except — молча проглоченный сбой дал бы ровно тот отказ,
+  // ради предотвращения которого всё это писалось. Проверяем не печать, а сам файл.
+  const pyJournal = join(pyProj, '.claude', '.state', 'qg-runs.jsonl');
+  check('валидаторы XML отмечаются в журнале', existsSync(pyJournal), pyJournal);
+  if (existsSync(pyJournal)) {
+    const tools = new Set(
+      readFileSync(pyJournal, 'utf8')
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l).tool)
+    );
+    check('в журнале отметился каждый из девяти', tools.size === 9, [...tools].join(', '));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1702,6 +1742,24 @@ section('Журнал прогонов — вердикт без прогона 
   const stale = run('tools/evidence-validator.mjs', [withHygiene, '--gate'], { env });
   check('прогон старше последней правки не засчитывается', stale.code === 2, stale.out.trim().slice(0, 130));
   check('сказано, что доказательство устарело', stale.out.includes('старше'), stale.out.trim().slice(0, 160));
+  rmSync(join(proj, '.claude', '.state', 'qg-pending.json'), { force: true });
+
+  // Правка в СОСЕДНЕЙ сессии не обесценивает свой прогон. Состояние гейта разделено по
+  // сессиям намеренно, и требование свежести не должно возвращать общий на проект замок
+  // через чёрный ход: иначе чужая правка в 14:00 отменяет честный прогон в 13:00.
+  writeFileSync(
+    join(proj, '.claude', '.state', 'qg-pending.json'),
+    JSON.stringify({
+      version: 2,
+      sessions: {
+        MINE: { armedAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', files: {} },
+        OTHER: { armedAt: '2099-01-01T00:00:00Z', updatedAt: '2099-01-01T00:00:00Z', files: {} },
+      },
+    }),
+    'utf8'
+  );
+  const twoSessions = run('tools/evidence-validator.mjs', [withHygiene, '--gate'], { env });
+  check('чужая сессия не обесценивает свой прогон', twoSessions.code === 0, twoSessions.out.trim().slice(0, 150));
   rmSync(join(proj, '.claude', '.state', 'qg-pending.json'), { force: true });
 
   // Проверки без инструмента журнала не требуют: требовать не с кого, и молчание здесь —

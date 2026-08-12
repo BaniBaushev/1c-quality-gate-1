@@ -46,6 +46,27 @@ def project_root(start=None):
     return here
 
 
+def emit_evidence(tool, errors, files=1, scope="structure-validation", sign="qg:XML-STRUCT"):
+    """Печатает готовую запись следа и отмечает прогон в журнале.
+
+    Общий хвост для всех валидаторов XML: контур переносит эту строку в отчёт дословно.
+    Пока каждый валидатор просто печатал «Validation OK», запись следа составляла модель по
+    прочтении вывода — то есть проверка с инструментом заканчивалась строкой, написанной от
+    руки, и отличить её от прогнанной было нечем.
+
+    Все валидаторы отчитываются ОДНИМ именем `structure-validation`: навык контура называет
+    так проверку структуры любого файла метаданных, а валидатор следа сверяет по имени.
+    Если бы отмечался только один из них, след после проверки формы или роли отвергался бы
+    как «инструмент не запускался» — ложная находка на добросовестно выполненной работе.
+    """
+    verdict = f"violation:{sign}" if errors else "clean"
+    record_run(scope, tool, verdict="violation" if errors else "clean", files=files)
+    print("")
+    print("## quality evidence")
+    print("")
+    print(f"[qg applied: layer=xml, scope={scope}, ids=[{sign}], verdict={verdict}]")
+
+
 def record_run(scope, tool, verdict=None, files=None, root=None):
     """Дописывает запись о прогоне. Ошибка записи проглатывается: проверка важнее учёта."""
     if not scope or not tool:

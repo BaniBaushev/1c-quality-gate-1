@@ -153,22 +153,12 @@ def finalize():
     # Отметка о прогоне в журнале плагина и готовая строка следа. Без них вердикт в отчёте
     # пишется от руки по прочтении вывода — и «валидатор сказал» неотличимо от «мне так
     # показалось». Импорт защищённый: валидатор используют и в отрыве от плагина.
-    verdict = "violation:qg:XML-STRUCT" if errors else "clean"
     try:
-        from _qg_journal import record_run
+        from _qg_journal import emit_evidence
 
-        record_run(
-            "structure-validation",
-            "tools/xml/meta-validate.py",
-            verdict="violation" if errors else "clean",
-            files=1,
-        )
+        emit_evidence("tools/xml/meta-validate.py", errors)
     except ImportError:
         pass
-    print("")
-    print("## quality evidence")
-    print("")
-    print(f"[qg applied: layer=xml, scope=structure-validation, ids=[qg:XML-STRUCT], verdict={verdict}]")
     if out_file:
         with open(out_file, "w", encoding="utf-8-sig") as f:
             f.write(result)

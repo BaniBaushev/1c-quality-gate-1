@@ -596,6 +596,13 @@ def main():
 
     # --- Final output ---
     r.finalize(out_file)
+    try:
+        from _qg_journal import emit_evidence
+
+        emit_evidence("tools/xml/cf-validate.py", r.errors)
+    except ImportError:
+        pass
+
     sys.exit(1 if r.errors > 0 else 0)
 
 

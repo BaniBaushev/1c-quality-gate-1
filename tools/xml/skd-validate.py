@@ -100,6 +100,13 @@ def finalize():
             f.write(result)
         print(f"Written to: {out_file}")
 
+    try:
+        from _qg_journal import emit_evidence
+
+        emit_evidence("tools/xml/skd-validate.py", errors)
+    except ImportError:
+        pass
+
 
 out_line(f"=== Validation: {file_name} ===")
 out_line("")

@@ -136,6 +136,13 @@ def main():
                 fh.write(result)
             print(f"Written to: {args.OutFile}")
 
+        try:
+            from _qg_journal import emit_evidence
+
+            emit_evidence("tools/xml/epf-validate.py", errors)
+        except ImportError:
+            pass
+
     # --- 1. Parse XML ---
     out_line("")
 

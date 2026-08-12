@@ -384,6 +384,13 @@ def main():
 
     print(result)
 
+    try:
+        from _qg_journal import emit_evidence
+
+        emit_evidence("tools/xml/mxl-validate.py", r.errors)
+    except ImportError:
+        pass
+
     sys.exit(1 if r.errors > 0 else 0)
 
 

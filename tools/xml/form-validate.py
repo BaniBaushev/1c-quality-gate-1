@@ -760,6 +760,13 @@ def main():
 
     print(result)
 
+    try:
+        from _qg_journal import emit_evidence
+
+        emit_evidence("tools/xml/form-validate.py", errors)
+    except ImportError:
+        pass
+
     if errors > 0:
         sys.exit(1)
     else:

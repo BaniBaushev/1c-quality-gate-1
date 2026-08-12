@@ -238,23 +238,31 @@ function isEmpty(value) {
  * Прогон инструмента, сделанный до правки файла, доказывает состояние, которого уже нет.
  * Состояние гейта читается напрямую, без импорта `gate.mjs`: тот сам вызывает валидатор, и
  * импорт был бы кольцевым.
+ *
+ * Граница берётся ТОЛЬКО из своей сессии. Максимум по всем сессиям вернул бы через чёрный
+ * ход ровно то, что состояние гейта разделяет по сессиям намеренно: правка в соседней сессии
+ * в 14:00 обесценивала бы прогон, честно сделанный в 13:00 по своим файлам. Когда сессия не
+ * названа, а их несколько, определить свою нечем — тогда ограничения по времени нет, и
+ * проверка вырождается в «отметка о прогоне вообще есть». Требовать больше значило бы
+ * блокировать добросовестную работу по чужой активности.
  */
-function lastGateActivity(root) {
+function lastGateActivity(root, sessionId = null) {
   const file = join(root, '.claude', '.state', 'qg-pending.json');
   if (!existsSync(file)) return null;
   try {
     const state = JSON.parse(readFileSync(file, 'utf8'));
-    const stamps = Object.values(state?.sessions || {})
-      .map((s) => String(s?.updatedAt || s?.armedAt || ''))
-      .filter(Boolean)
-      .sort();
-    return stamps.length ? stamps[stamps.length - 1] : null;
+    const sessions = state?.sessions || {};
+    const ids = Object.keys(sessions);
+    const own = sessionId && ids.includes(sessionId) ? sessionId : ids.length === 1 ? ids[0] : null;
+    if (!own) return null;
+    const s = sessions[own];
+    return String(s?.updatedAt || s?.armedAt || '') || null;
   } catch {
     return null;
   }
 }
 
-export function validate(text, { gate = false, root = null } = {}) {
+export function validate(text, { gate = false, root = null, session = null } = {}) {
   const projectDir = root || projectRoot();
   const problems = [];
   const add = (severity, line, message) => problems.push({ severity, line, message });
@@ -489,7 +497,7 @@ export function validate(text, { gate = false, root = null } = {}) {
   // не защищает от записи, дописанной в журнал вручную. Независимого источника, из которого
   // такое можно перевывести, у плагина нет. Это обнаружение молчания, и только.
   const journal = readJournal(projectDir);
-  const since = lastGateActivity(projectDir);
+  const since = lastGateActivity(projectDir, session);
   const fresh = journal.filter((r) => !since || String(r.ts || '') >= since);
   const runScopes = new Set(fresh.map((r) => r.scope));
 

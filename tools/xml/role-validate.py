@@ -531,6 +531,13 @@ def main():
         lines.append(f'=== Result: {errors} errors, {warnings} warnings ({checks} checks) ===')
         result = '\n'.join(lines)
     write_output(result)
+    try:
+        from _qg_journal import emit_evidence
+
+        emit_evidence("tools/xml/role-validate.py", errors)
+    except ImportError:
+        pass
+
     sys.exit(1 if errors > 0 else 0)
 
 

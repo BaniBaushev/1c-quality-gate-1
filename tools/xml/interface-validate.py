@@ -395,6 +395,13 @@ def main():
             f.write(result)
         print(f'Written to: {out_file}')
 
+    try:
+        from _qg_journal import emit_evidence
+
+        emit_evidence("tools/xml/interface-validate.py", r.errors)
+    except ImportError:
+        pass
+
     sys.exit(1 if r.errors > 0 else 0)
 
 

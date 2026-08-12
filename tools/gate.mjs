@@ -156,7 +156,9 @@ function cmdRelease(args) {
       return 2;
     }
     evidenceText = readFileSync(evidenceFile, 'utf8');
-    const { problems, exitCode } = validate(evidenceText, { gate: true });
+    // Сессия передаётся явно: годность доказательства меряется правками СВОЕЙ сессии.
+    // Иначе правка в соседней обесценивала бы прогон, честно сделанный по своим файлам.
+    const { problems, exitCode } = validate(evidenceText, { gate: true, session: sessionId });
     if (exitCode === 2) {
       process.stderr.write('След прогона не прошёл проверку — гейт НЕ снят:\n\n');
       for (const p of problems.filter((x) => x.severity === 'error')) {
