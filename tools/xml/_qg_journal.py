@@ -76,12 +76,23 @@ def target_from_argv(argv=None):
     параметра (`-Path`, `-ObjectPath`, `-FormPath`, `-RightsPath`…) и своя внутренняя
     переменная с разрешённым путём. Значение параметра — единственное общее место.
 
+    Берётся значение параметра, в имени которого есть `path`, а НЕ последний позиционный
+    аргумент: у валидаторов есть и `-MaxErrors 10`, и `-OutFile отчёт.txt`, и при запуске
+    `-Path Товары.xml -MaxErrors 10` в журнал уходило бы `10`. Дальше сверка покрытия
+    объявляла бы непроверенным каждый настоящий файл — ложное утверждение, называющее
+    реальные пути.
+
     Возвращает список из одного пути либо пустой: путь может указывать и на файл, и на каталог
     объекта — сверку покрытия это учитывает, засчитывая файлы внутри каталога.
     """
     args = list(sys.argv[1:] if argv is None else argv)
-    values = [a for a in args if not a.startswith("-")]
-    return values[-1:] if values else []
+    for i, arg in enumerate(args):
+        if arg.startswith("-") and "path" in arg.lstrip("-").lower():
+            value = args[i + 1] if i + 1 < len(args) else None
+            return [value] if value and not value.startswith("-") else []
+    # Запасной путь — позиционный аргумент, если параметр пути не назван вовсе.
+    positional = [a for i, a in enumerate(args) if not a.startswith("-") and (i == 0 or not args[i - 1].startswith("-"))]
+    return positional[-1:] if positional else []
 
 
 def normalize_path(path, root):

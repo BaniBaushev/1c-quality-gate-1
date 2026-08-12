@@ -757,6 +757,22 @@ if (python.ok) {
     check(`${name}: печатает запись следа`, r.out.includes('scope=structure-validation'), r.out.trim().slice(-120));
   }
 
+  // Путь в журнал попадает из аргументов запуска, а у валидаторов есть не только параметры
+  // пути: `-MaxErrors 10` и `-OutFile отчёт.txt` тоже принимают значение. Взятый «последним
+  // позиционным», путь оказывался числом — и сверка покрытия объявляла непроверенным каждый
+  // настоящий файл, называя реальные пути в ложном утверждении.
+  const argvProj = join(WORK, 'py-argv');
+  rmSync(argvProj, { recursive: true, force: true });
+  mkdirSync(argvProj, { recursive: true });
+  runPy(pyTool('meta'), ['-Path', xml('meta', 'valid.xml'), '-MaxErrors', '5'], { env: { CLAUDE_PROJECT_DIR: argvProj } });
+  const argvJournal = join(argvProj, '.claude', '.state', 'qg-runs.jsonl');
+  const argvRec = existsSync(argvJournal) ? JSON.parse(readFileSync(argvJournal, 'utf8').trim().split('\n').pop()) : {};
+  check(
+    'в журнал попал путь, а не значение соседнего флага',
+    Array.isArray(argvRec.files) && argvRec.files.every((f) => f.endsWith('.xml')),
+    JSON.stringify(argvRec.files)
+  );
+
   // Импорт журнала защищён try/except — молча проглоченный сбой дал бы ровно тот отказ,
   // ради предотвращения которого всё это писалось. Проверяем не печать, а сам файл.
   const pyJournal = join(pyProj, '.claude', '.state', 'qg-runs.jsonl');
@@ -1933,6 +1949,51 @@ section('Покрытие: прогон по одному файлу не зак
   const oldFormat = run('tools/evidence-validator.mjs', [roleEv, '--gate'], { env });
   check('запись прежнего формата не блокирует', oldFormat.code !== 2, oldFormat.out.trim().slice(0, 170));
   check('о несверенном покрытии сказано', oldFormat.out.includes('покрытие не сверено'), oldFormat.out.trim().slice(0, 200));
+
+  // Снятие гейта не должно ГЛОТАТЬ предупреждения. Пока они были косметическими (регистр
+  // имени, незнакомое измерение), их потеря ничего не стоила; теперь предупреждением
+  // сообщается неполнота покрытия — и снятие без следа об этом ровно то, против чего
+  // написан весь плагин.
+  const relProj = join(WORK, 'coverage-release');
+  rmSync(relProj, { recursive: true, force: true });
+  mkdirSync(join(relProj, '.claude', '.state'), { recursive: true });
+  writeFileSync(
+    join(relProj, '.claude', '.state', 'qg-pending.json'),
+    JSON.stringify({
+      version: 2,
+      sessions: {
+        S: {
+          armedAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
+          files: {
+            'src/cf/Catalogs/Товары.xml': { kind: 'metadata-xml', edits: 1 },
+            'src/cf/Catalogs/Товары/Ext/Predefined.xml': { kind: 'metadata-xml', edits: 1 },
+          },
+        },
+      },
+    }),
+    'utf8'
+  );
+  writeFileSync(
+    join(relProj, '.claude', '.state', 'qg-runs.jsonl'),
+    JSON.stringify({ ts: '2026-06-01T00:00:00.000Z', scope: 'structure-validation', tool: 'tools/xml/meta-validate.py', verdict: 'clean', files: ['src/cf/catalogs/товары.xml'] }) + '\n',
+    'utf8'
+  );
+  const relEv = writeBytes(
+    'ev-coverage-release.md',
+    head + '[qg applied: layer=xml, scope=structure-validation, ids=[qg:XML-STRUCT], verdict=clean]\n' + tail
+  );
+  const released = run('tools/gate.mjs', ['release', '--evidence', relEv, '--session', 'S'], {
+    env: { CLAUDE_PROJECT_DIR: relProj },
+  });
+  check('снятие с неполным покрытием проходит, но говорит об этом', released.out.includes('след неполон'), released.out.trim().slice(0, 170));
+  const doneFile = join(relProj, '.claude', '.state', 'qg-done.json');
+  const doneState = existsSync(doneFile) ? JSON.parse(readFileSync(doneFile, 'utf8')) : {};
+  check(
+    'неполнота записана в журнал снятий',
+    (doneState.sessions?.S?.warnings || []).some((w) => String(w.message).includes('predefined.xml')),
+    JSON.stringify(doneState.sessions?.S?.warnings || []).slice(0, 160)
+  );
 }
 
 // ---------------------------------------------------------------------------

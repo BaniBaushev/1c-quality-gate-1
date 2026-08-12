@@ -149,6 +149,10 @@ function cmdRelease(args) {
   const reason = typeof args.reason === 'string' ? args.reason : null;
 
   let evidenceText = null;
+  // Предупреждения валидатора переживают снятие: часть из них — заявления о неполноте
+  // (непокрытый файл, несверенное покрытие), а не придирки к оформлению. Выброшенные, они
+  // оставляли бы гейт снятым без следа именно там, где след и нужен.
+  let warnings = [];
 
   if (evidenceFile) {
     if (!existsSync(evidenceFile)) {
@@ -167,6 +171,7 @@ function cmdRelease(args) {
       process.stderr.write('\nИсправь след и повтори снятие.\n');
       return 2;
     }
+    warnings = problems.filter((p) => p.severity === 'warn');
   } else if (cls && reason) {
     if (!['C0', 'C1'].includes(cls)) {
       process.stderr.write(
@@ -232,11 +237,19 @@ function cmdRelease(args) {
     evidenceFile: evidenceFile || null,
     class: cls || null,
     reason: reason || null,
+    warnings: warnings.map((w) => ({ line: w.line || null, message: w.message })),
   };
   writeFileSync(done, JSON.stringify(doneState, null, 2), 'utf8');
 
   const count = Object.keys(sessionState.files || {}).length;
   const rest = Object.keys(state.sessions).length;
+  if (warnings.length) {
+    process.stdout.write(`Гейт снят, но след неполон (${warnings.length}) — это записано в журнал снятий:\n`);
+    for (const w of warnings) {
+      process.stdout.write(`  ПРЕДУПРЕЖДЕНИЕ ${evidenceFile}:${w.line || '?'} — ${w.message}\n`);
+    }
+    process.stdout.write('\n');
+  }
   process.stdout.write(
     (evidenceFile
       ? `Гейт сессии ${sessionId} снят по следу прогона (${evidenceFile}). Файлов в охвате: ${count}.\n`
