@@ -25,6 +25,49 @@ export const SECTION = '## quality evidence';
 const LAYERS = ['code', 'arch', 'xml', 'hygiene'];
 const VOLUMES = ['C0', 'C1', 'C2', 'C3'];
 
+/**
+ * Измерения, которые доступными средствами не проверяются, и потому обязаны быть заявлены.
+ *
+ * `compilation` — тела модулей: ни выгрузка, ни валидаторы XML их не компилируют.
+ * `query-execution` — текст запроса: он строковый литерал, его не разбирает ни анализатор,
+ * ни сборка бинарника. Ошибка вроде «Неоднозначное поле» доживает до первого выполнения.
+ * `static-analysis` и `cross-config-resolution` печатает `analyzer-run.mjs`, когда файл не
+ * разобран или основной конфигурации нет.
+ *
+ * Список закрытый: опечатка в имени измерения оставила бы запись, которая выглядит
+ * заполненной, но ничего не закрывает. Пополнять его нужно вместе с инструментом, который
+ * новое имя печатает, — иначе валидатор ругается на собственный вывод плагина.
+ */
+const DIMENSIONS = ['compilation', 'query-execution', 'static-analysis', 'cross-config-resolution'];
+
+/**
+ * Метки архетипов из таблицы `quality-gate/SKILL.md`.
+ *
+ * Поле `archetypes` пишет модель, инструмент его не печатает — и на нём завязано требование
+ * об исполнении запроса. Метка `queries` вместо `query` не сработала бы ничем: требование
+ * молча не предъявляется, гейт снимается, а в отчёте всё выглядит заполненным. Поэтому
+ * список закрытый, а проектные архетипы добавляются к нему из `archetypes.custom`.
+ *
+ * `none` — законная форма «ни одна метка не сработала»: пустой список запрещён отдельно.
+ */
+const ARCHETYPES = [
+  'none',
+  'query',
+  'transaction',
+  'record-set',
+  'object-event',
+  'integration',
+  'rights',
+  'cfe-patch',
+  'scheduled-job',
+  'client-server',
+  'user-dialog',
+  'form-module',
+  'async-client',
+  'new-common-module',
+  'new-metadata-object',
+];
+
 /** Поля, без которых запись бессмысленна. Пустое значение приравнивается к отсутствию. */
 const REQUIRED = {
   scope: ['volume', 'files', 'archetypes', 'driver', 'resolved'],
@@ -207,6 +250,73 @@ export function validate(text, { gate = false } = {}) {
     if (rec.type === 'sentinel' && rec.fields.status && !['found', 'not_found'].includes(rec.fields.status)) {
       add('error', rec.line, `status="${rec.fields.status}": ожидается found|not_found`);
     }
+    if (rec.type === 'not_verified' && rec.fields.dimension && !DIMENSIONS.includes(String(rec.fields.dimension))) {
+      add(
+        'warn',
+        rec.line,
+        `dimension="${rec.fields.dimension}" вне списка ${DIMENSIONS.join('|')}: ` +
+          'запись выглядит заполненной, но требуемое измерение не закрывает'
+      );
+    }
+  }
+
+  // Измерение считается закрытым, если о нём заявлено: либо оно проверено (запись applied с
+  // тем же именем в scope), либо признано непроверяемым (not_verified). Молчание — нет.
+  //
+  // Два пространства имён здесь намеренно сведены в одно, и это накладывает ограничение на
+  // будущие требования: имя измерения не должно совпадать с распространённым `scope` записи
+  // applied, иначе требование удовлетворялось бы само собой. Так, `static-analysis` —
+  // одновременно измерение и scope, которые печатает `analyzer-run.mjs`; сегодня закрывать
+  // его никто не требует, но новое требование по такому имени было бы пустым.
+  const closes = new Set();
+  for (const rec of records) {
+    if (rec.type === 'not_verified' && rec.fields.dimension) closes.add(String(rec.fields.dimension).trim());
+    if (rec.type === 'applied' && rec.fields.scope) closes.add(String(rec.fields.scope).trim());
+  }
+
+  // Настройка проекта нужна дважды: для сверки поля `config` и для списка проектных
+  // архетипов. Читается один раз; если не читается — сверять не с чем, и требования,
+  // опирающиеся на неё, смягчаются до предупреждения.
+  let project = null;
+  try {
+    project = resolveConfig();
+  } catch {
+    /* настройка недоступна */
+  }
+  const knownArchetypes = new Set([
+    ...ARCHETYPES,
+    ...(project?.values?.archetypes?.custom || []).map((a) => String(a?.name ?? '').trim()).filter(Boolean),
+  ]);
+
+  const archetypesOf = (rec) => (Array.isArray(rec.fields.archetypes) ? rec.fields.archetypes : []);
+
+  // Метка архетипа — единственное поле следа, от которого зависит требование и которое при
+  // этом пишет модель, а не инструмент. Опечатка здесь не даёт ни ошибки, ни находки: правило
+  // просто не предъявляется, и гейт снимается на полном молчании.
+  for (const rec of records.filter((r) => r.type === 'scope')) {
+    for (const label of archetypesOf(rec)) {
+      if (knownArchetypes.has(label)) continue;
+      add(
+        project && gate ? 'error' : 'warn',
+        rec.line,
+        `архетип "${label}" не из таблицы quality-gate и не объявлен в archetypes.custom: ` +
+          'требования, привязанные к архетипам, по такой метке не сработают'
+      );
+    }
+  }
+
+  // Архетип «запрос» обязывает отчитаться о выполнении запроса. Прогон, который его ни разу
+  // не выполнил, вправе так и написать — но не вправе промолчать: статический разбор текста
+  // запроса не заменяет попытки его выполнить.
+  const queryArchetype = records.some((r) => r.type === 'scope' && archetypesOf(r).includes('query'));
+  if (queryArchetype && !closes.has('query-execution')) {
+    add(
+      gate ? 'error' : 'warn',
+      records.find((r) => r.type === 'scope')?.line || 0,
+      'сработал архетип query, но об исполнении запроса не заявлено: нужна запись ' +
+        '[qg applied: layer=code, scope=query-execution, ...] либо ' +
+        '[qg not_verified: dimension=query-execution, reason=no_platform]'
+    );
   }
 
   if (!gate) {
@@ -230,12 +340,8 @@ export function validate(text, { gate = false } = {}) {
   // которое никто не проверяет, — это ровно та подпись под непрогнанной проверкой, против
   // которой написан весь формат: приписать `config=default` в проекте с задранными порогами
   // не сложнее, чем забыть посмотреть настройку.
-  let actual = null;
-  try {
-    actual = evidenceValue(resolveConfig());
-  } catch {
-    /* настройка не читается — сверять не с чем, ограничиваемся требованием поля */
-  }
+  // Настройка прочитана выше — сверять не с чем только тогда, когда её не удалось прочесть.
+  const actual = project ? evidenceValue(project) : null;
   for (const s of scopes) {
     if (isEmpty(s.fields.config)) {
       add(
@@ -294,14 +400,18 @@ export function validate(text, { gate = false } = {}) {
   }
 
   // Вердикт «чисто» обязан признавать то, что проверить было нечем.
+  //
+  // Требование именно по измерению `compilation`, а не «хотя бы одна запись not_verified».
+  // Иначе появление второго измерения ослабляет проверку: прогон заявляет непроверенным
+  // что-нибудь одно, о компилируемости молчит — и полностью зелёный отчёт снова проходит.
   const allClean = applied.length > 0 && applied.every((r) => r.fields.verdict === 'clean');
-  const hasNotVerified = records.some((r) => r.type === 'not_verified');
-  if (allClean && !hasNotVerified) {
+  if (allClean && !closes.has('compilation')) {
     add(
       'error',
       0,
-      'все проверки «clean», но нет ни одной записи not_verified. Компилируемость тел модулей не проверяется ' +
-        'ни выгрузкой конфигурации, ни валидаторами XML — если /CheckConfig не запускался, это должно быть заявлено'
+      'все проверки «clean», но компилируемость тел модулей не заявлена. Её не проверяет ни выгрузка ' +
+        'конфигурации, ни валидаторы XML — если /CheckConfig не запускался, нужна запись ' +
+        '[qg not_verified: dimension=compilation, reason=no_platform]'
     );
   }
 

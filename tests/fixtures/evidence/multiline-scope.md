@@ -9,3 +9,4 @@
 [qg sentinel: target=v8std, id=std454, status=found]
 [qg applied: layer=code, scope=query-in-loop, ids=[std436], verdict=violation:std436]
 [qg not_verified: dimension=compilation, reason=no_platform]
+[qg not_verified: dimension=query-execution, reason=no_platform]

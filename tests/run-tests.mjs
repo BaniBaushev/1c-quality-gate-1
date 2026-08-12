@@ -125,6 +125,222 @@ section('Гигиена файлов — НЕ придирается к корр
 }
 
 // ---------------------------------------------------------------------------
+section('Запросы — псевдоним источника, затеняющий колонку временной таблицы');
+
+// Класс дефекта, который не ловится ничем до продуктива: текст запроса — строковый литерал,
+// его не разбирает ни анализатор, ни валидаторы XML, ни сборка бинарника. Падает в рантайме
+// сообщением «Неоднозначное поле».
+const bsl = (name, body) => writeBytes(name, `Функция Т()\n\n\tЗапрос = Новый Запрос;\n\tЗапрос.Текст =\n\t"${body}";\n\n\tВозврат Запрос.Выполнить();\n\nКонецФункции\n`);
+
+{
+  // Канонический случай: колонка ВТ названа так же, как источник соседнего запроса пакета.
+  const f = bsl('qry-shadow.bsl', [
+    'ВЫБРАТЬ',
+    '|	Перемещение.Ссылка КАК Перемещение',
+    '|ПОМЕСТИТЬ ВТ_Связи',
+    '|ИЗ',
+    '|	Документ.ПеремещениеТоваров КАК Перемещение',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Связи.Перемещение КАК Перемещение',
+    '|ИЗ',
+    '|	ВТ_Связи КАК Связи',
+    '|		ВНУТРЕННЕЕ СОЕДИНЕНИЕ Документ.ПеремещениеТоваров КАК Перемещение',
+    '|		ПО Связи.Перемещение = Перемещение.Ссылка',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('затенение колонки ВТ — находка', r.out.includes('QRY-ALIAS-SHADOWS-FIELD'), r.out.trim().slice(0, 140));
+  check('затенение с разыменованием даёт код 2', r.code === 2, `код ${r.code}`);
+  check('названы и псевдоним, и таблица', r.out.includes('«Перемещение»') && r.out.includes('ВТ_Связи'));
+}
+{
+  // Колонка ВТ получает имя не только из КАК: `Связи.Перемещение` — тоже колонка
+  // «Перемещение». Собирать одну форму значит не видеть половину коллизий.
+  const f = bsl('qry-shadow-bare.bsl', [
+    'ВЫБРАТЬ',
+    '|	Связи.Перемещение',
+    '|ПОМЕСТИТЬ ВТ_Связи',
+    '|ИЗ',
+    '|	РегистрСведений.Связи КАК Связи',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Перемещение.Номер КАК Номер',
+    '|ИЗ',
+    '|	ВТ_Связи КАК Связи',
+    '|		ВНУТРЕННЕЕ СОЕДИНЕНИЕ Документ.ПеремещениеТоваров КАК Перемещение',
+    '|		ПО Связи.Перемещение = Перемещение.Ссылка',
+  ].join('\n\t'));
+  check('колонка без КАК тоже участвует', run('tools/query-lint.mjs', [f]).code === 2);
+}
+{
+  // Теневое перекрытие в неголовной ветке ОБЪЕДИНИТЬ — дефект выполнения, в отличие от
+  // отсутствия псевдонимов в той же ветке (см. блок про ложные срабатывания).
+  const f = bsl('qry-shadow-union.bsl', [
+    'ВЫБРАТЬ',
+    '|	Расход.Регистратор КАК Регистратор',
+    '|ПОМЕСТИТЬ ВТ_Движения',
+    '|ИЗ',
+    '|	РегистрНакопления.Расходы КАК Расход',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Движения.Регистратор КАК Регистратор',
+    '|ИЗ',
+    '|	ВТ_Движения КАК Движения',
+    '|',
+    '|ОБЪЕДИНИТЬ ВСЕ',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Регистратор.Ссылка',
+    '|ИЗ',
+    '|	ВТ_Движения КАК Движения',
+    '|		ВНУТРЕННЕЕ СОЕДИНЕНИЕ Документ.РеализацияТоваровУслуг КАК Регистратор',
+    '|		ПО Движения.Регистратор = Регистратор.Ссылка',
+  ].join('\n\t'));
+  check('перекрытие в ветке ОБЪЕДИНИТЬ найдено', run('tools/query-lint.mjs', [f]).code === 2);
+}
+{
+  // Без обращения через точку запрос выполнится: имя заминировано, но ещё не подорвано.
+  // Блокировать такое как ошибку значило бы требовать переименования в работающем коде.
+  const f = bsl('qry-shadow-latent.bsl', [
+    'ВЫБРАТЬ',
+    '|	Док.Ссылка КАК Заказ',
+    '|ПОМЕСТИТЬ ВТ_Заказы',
+    '|ИЗ',
+    '|	Документ.ЗаказКлиента КАК Док',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Заказы.Заказ КАК Заказ',
+    '|ИЗ',
+    '|	ВТ_Заказы КАК Заказы',
+    '|		ЛЕВОЕ СОЕДИНЕНИЕ Документ.ЗаказКлиента КАК Заказ',
+    '|		ПО Заказы.Заказ = Заказ',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('коллизия без разыменования — предупреждение, не ошибка', r.code === 1, `код ${r.code}: ${r.out.trim().slice(0, 120)}`);
+}
+
+// ---------------------------------------------------------------------------
+section('Запросы — НЕ придирается к корректным (ложные срабатывания)');
+
+{
+  // `КАК` в ВЫРАЗИТЬ — приведение типа, а не псевдоним источника. Конструкция стоит в
+  // условии соединения, то есть ровно там, где наивный поиск «имя после КАК» и промахнётся.
+  const f = bsl('qry-cast.bsl', [
+    'ВЫБРАТЬ',
+    '|	Товары.Ссылка КАК Номенклатура',
+    '|ПОМЕСТИТЬ ВТ_Товары',
+    '|ИЗ',
+    '|	Справочник.Номенклатура КАК Товары',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	ВЫРАЗИТЬ(Остатки.Регистратор КАК Документ.РеализацияТоваровУслуг).Дата КАК Дата',
+    '|ИЗ',
+    '|	РегистрНакопления.ОстаткиТоваров КАК Остатки',
+    '|		ВНУТРЕННЕЕ СОЕДИНЕНИЕ ВТ_Товары КАК Товары',
+    '|		ПО Остатки.Номенклатура = Товары.Номенклатура',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('приведение типа не считается псевдонимом', r.code === 0, r.out.trim().slice(0, 140));
+}
+{
+  // Имена колонок объединения берутся из первой выборки — псевдонимы в последующих ветках не
+  // нужны и их отсутствие дефектом не является. Проверка, ругающаяся на это, обучает
+  // дописывать псевдонимы там, где они ничего не меняют.
+  const f = bsl('qry-union-noalias.bsl', [
+    'ВЫБРАТЬ',
+    '|	Док.Ссылка КАК Ссылка,',
+    '|	Док.Дата КАК Дата',
+    '|ИЗ',
+    '|	Документ.РеализацияТоваровУслуг КАК Док',
+    '|',
+    '|ОБЪЕДИНИТЬ ВСЕ',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Ссылка,',
+    '|	Дата',
+    '|ИЗ',
+    '|	Документ.ВозвратТоваровОтКлиента',
+  ].join('\n\t'));
+  check('ветка ОБЪЕДИНИТЬ без псевдонимов — молчание', run('tools/query-lint.mjs', [f]).code === 0);
+}
+{
+  // Совпадение имён само по себе безвредно: если временная таблица в запросе не участвует,
+  // разночтения не возникает.
+  const f = bsl('qry-unused-temp.bsl', [
+    'ВЫБРАТЬ',
+    '|	Связи.Перемещение КАК Перемещение',
+    '|ПОМЕСТИТЬ ВТ_Связи',
+    '|ИЗ',
+    '|	РегистрСведений.Связи КАК Связи',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Перемещение.Номер КАК Номер',
+    '|ИЗ',
+    '|	Документ.ПеремещениеТоваров КАК Перемещение',
+  ].join('\n\t'));
+  check('незадействованная ВТ не порождает находку', run('tools/query-lint.mjs', [f]).code === 0);
+}
+{
+  // Точка с запятой внутри литерала SDBL не разделяет пакет. Разорвись он здесь — колонки
+  // временной таблицы потерялись бы, и настоящая коллизия во втором запросе исчезла бы из
+  // вида: пропуск, замаскированный под чистый прогон.
+  const f = bsl('qry-literal-semicolon.bsl', [
+    'ВЫБРАТЬ',
+    '|	Связи.Перемещение КАК Перемещение',
+    '|ПОМЕСТИТЬ ВТ_Связи',
+    '|ИЗ',
+    '|	РегистрСведений.Связи КАК Связи',
+    '|ГДЕ',
+    '|	Связи.Комментарий = ""раз;два""',
+    '|;',
+    '|',
+    '|ВЫБРАТЬ',
+    '|	Перемещение.Номер КАК Номер',
+    '|ИЗ',
+    '|	ВТ_Связи КАК Связи',
+    '|		ВНУТРЕННЕЕ СОЕДИНЕНИЕ Документ.ПеремещениеТоваров КАК Перемещение',
+    '|		ПО Связи.Перемещение = Перемещение.Ссылка',
+  ].join('\n\t'));
+  const r = run('tools/query-lint.mjs', [f]);
+  check('литерал с «;» не рвёт пакет', r.code === 2, r.out.trim().slice(0, 120));
+}
+{
+  const f = writeBytes('qry-none.bsl', 'Процедура Т()\n\tА = 1;\nКонецПроцедуры\n');
+  const r = run('tools/query-lint.mjs', [f]);
+  check('файл без запросов — чисто', r.code === 0);
+  // Инструмент, промолчавший о том, что проверять было нечего, неотличим от прогнавшего проверку.
+  check('отсутствие запросов заявлено записью следа', r.out.includes('[qg skipped: layer=code, scope=query-alias-shadowing, reason=not_applicable]'),
+    r.out.trim().slice(0, 160));
+}
+{
+  // Запись следа печатает инструмент, а принимает валидатор. Разъедься эти два места — строку
+  // начнут сочинять руками, ровно как раньше сочиняли пороги настройки.
+  const f = bsl('qry-evidence.bsl', [
+    'ВЫБРАТЬ',
+    '|	Товары.Ссылка КАК Номенклатура',
+    '|ПОМЕСТИТЬ ВТ_Товары',
+    '|ИЗ',
+    '|	Справочник.Номенклатура КАК Товары',
+  ].join('\n\t'));
+  const printed = run('tools/query-lint.mjs', [f]).out.split('## quality evidence')[1]?.trim() || '';
+  const report = writeBytes('ev-from-query-lint.md',
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C2, files=1, archetypes=[query], driver=archetype:query, resolved=code:L2, config=default]\n' +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n' +
+    printed + '\n' +
+    '[qg not_verified: dimension=compilation, reason=no_platform]\n' +
+    '[qg not_verified: dimension=query-execution, reason=no_platform]\n');
+  const r = run('tools/evidence-validator.mjs', [report, '--gate']);
+  check('запись следа из query-lint проходит валидатор', r.code === 0, `${printed} → ${r.out.trim().slice(0, 140)}`);
+}
+
+// ---------------------------------------------------------------------------
 section('Сверка «диск ↔ состав»');
 
 {
@@ -332,6 +548,105 @@ const customProj = { env: { CLAUDE_PROJECT_DIR: CUSTOM_PROJ } };
   const stale = writeBytes('ev-stale-config.md', scoped(', config=custom:volume') + body);
   const rs = run('tools/evidence-validator.mjs', [stale, '--gate'], customProj);
   check('усечённый перечень секций отвергнут', rs.code === 2 && rs.out.includes('расходится'), rs.out.trim().slice(0, 160));
+}
+
+// Исполнение запроса. Текст запроса — строковый литерал: его не разбирает ни анализатор, ни
+// сборка бинарника, и ошибка вроде «Неоднозначное поле» доживает до первого выполнения.
+// Прогон вправе запрос не выполнять, но не вправе об этом промолчать.
+{
+  const head = (archetypes) =>
+    '## quality evidence\n\n' +
+    `[qg scope: volume=C2, files=1, archetypes=[${archetypes}], driver=archetype:query, resolved=code:L2, config=default]\n` +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n';
+  const compilation = '[qg not_verified: dimension=compilation, reason=no_platform]\n';
+  const violation = '[qg applied: layer=code, scope=query-in-loop, ids=[std436], verdict=violation:std436]\n';
+
+  const silent = writeBytes('ev-query-silent.md', head('query') + violation + compilation);
+  const rSilent = run('tools/evidence-validator.mjs', [silent, '--gate']);
+  check('архетип query без отчёта об исполнении — отклонён', rSilent.code === 2 && rSilent.out.includes('query-execution'),
+    rSilent.out.trim().slice(0, 160));
+
+  // В нестрогом режиме — предупреждение: отчёты, собранные до появления правила, читаются.
+  const rLint = run('tools/evidence-validator.mjs', [silent]);
+  check('в нестрогом режиме молчание об исполнении — предупреждение', rLint.code === 1, rLint.out.trim().slice(0, 140));
+
+  const declared = writeBytes('ev-query-declared.md',
+    head('query') + violation + compilation + '[qg not_verified: dimension=query-execution, reason=no_platform]\n');
+  check('заявленная непроверяемость исполнения принимается',
+    run('tools/evidence-validator.mjs', [declared, '--gate']).code === 0);
+
+  const executed = writeBytes('ev-query-executed.md',
+    head('query') + violation + compilation +
+    '[qg applied: layer=code, scope=query-execution, ids=[qg:QRY-EXECUTED], verdict=clean]\n');
+  check('фактическое исполнение запроса закрывает требование',
+    run('tools/evidence-validator.mjs', [executed, '--gate']).code === 0);
+
+  // Требование адресное: без архетипа query отчитываться об исполнении не с чего.
+  const noQuery = writeBytes('ev-no-query.md', head('transaction') + violation + compilation);
+  check('без архетипа query требование не предъявляется',
+    run('tools/evidence-validator.mjs', [noQuery, '--gate']).code === 0);
+
+  // Второе измерение не должно ослаблять первое: заявить непроверяемым исполнение запроса и
+  // промолчать о компилируемости — снова полностью зелёный отчёт, который проходит.
+  const masked = writeBytes('ev-dimension-masking.md',
+    head('query') +
+    '[qg applied: layer=code, scope=query-alias-shadowing, ids=[qg:QRY-ALIAS-SHADOWS-FIELD], verdict=clean]\n' +
+    '[qg not_verified: dimension=query-execution, reason=no_platform]\n');
+  const rMasked = run('tools/evidence-validator.mjs', [masked, '--gate']);
+  check('чужое измерение не закрывает компилируемость', rMasked.code === 2 && rMasked.out.includes('compilation'),
+    rMasked.out.trim().slice(0, 160));
+
+  // Опечатка в имени измерения оставляет запись, которая выглядит заполненной.
+  const typo = writeBytes('ev-dimension-typo.md',
+    head('query') + violation + compilation + '[qg not_verified: dimension=query_execution, reason=no_platform]\n');
+  const rTypo = run('tools/evidence-validator.mjs', [typo]);
+  check('незнакомое измерение названо', rTypo.out.includes('query_execution'), rTypo.out.trim().slice(0, 160));
+
+  // Метка архетипа — единственное поле, от которого зависит требование и которое пишет
+  // модель, а не инструмент. Опечатка не давала бы ни ошибки, ни находки: правило просто не
+  // предъявлялось бы, и гейт снимался на полном молчании.
+  const typoArch = writeBytes('ev-archetype-typo.md',
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C2, files=1, archetypes=[queries], driver=archetype:queries, resolved=code:L2, config=default]\n' +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n' + violation + compilation);
+  const rArch = run('tools/evidence-validator.mjs', [typoArch, '--gate']);
+  check('незнакомая метка архетипа не пропускается', rArch.code === 2 && rArch.out.includes('queries'), rArch.out.trim().slice(0, 160));
+
+  // Проектный архетип — законная метка: иначе `archetypes.custom` пришлось бы выбирать между
+  // работающей настройкой и проходящим следом.
+  const archProj = join(WORK, 'ev-archetype-proj');
+  mkdirSync(archProj, { recursive: true });
+  writeFileSync(join(archProj, '.1c-quality-gate.json'),
+    JSON.stringify({ archetypes: { custom: [{ name: 'exchange', markers: ['ПланОбмена'], minCode: 'L2' }] } }), 'utf8');
+  const customArch = writeBytes('ev-archetype-custom.md',
+    '## quality evidence\n\n' +
+    '[qg scope: volume=C2, files=1, archetypes=[exchange], driver=archetype:exchange, resolved=code:L2, config=custom:archetypes]\n' +
+    '[qg sentinel: target=v8std, id=std454, status=found]\n' + violation + compilation);
+  const rCustom = run('tools/evidence-validator.mjs', [customArch, '--gate'], { env: { CLAUDE_PROJECT_DIR: archProj } });
+  check('проектный архетип принимается как метка', rCustom.code === 0, rCustom.out.trim().slice(0, 160));
+
+  // Список меток в валидаторе и таблица архетипов в навыке обязаны сходиться: разъедься они —
+  // модель пишет метку из таблицы, а валидатор её отвергает.
+  const skill = readFileSync(join(ROOT, 'skills/quality-gate/SKILL.md'), 'utf8');
+  const validatorSrc = readFileSync(join(ROOT, 'tools', 'evidence-validator.mjs'), 'utf8');
+  const tableLabels = [...skill.matchAll(/^\|[^|]+\|\s*`([a-z][a-z-]*)`\s*\|/gm)].map((m) => m[1]);
+  const validatorLabels = ((validatorSrc.match(/const ARCHETYPES = \[([^\]]+)\]/s) || [, ''])[1].match(/'([^']+)'/g) || [])
+    .map((s) => s.slice(1, -1));
+  check('таблица архетипов даёт хотя бы десять меток', tableLabels.length >= 10, `${tableLabels.length}`);
+  check('метки навыка и валидатора совпадают',
+    tableLabels.every((l) => validatorLabels.includes(l)) && validatorLabels.filter((l) => l !== 'none').every((l) => tableLabels.includes(l)),
+    `навык: ${tableLabels.join(',')} | валидатор: ${validatorLabels.join(',')}`);
+
+  // Закрытый список измерений и инструменты, которые их печатают, обязаны сходиться. Иначе
+  // валидатор ругается на собственный вывод плагина, и предупреждению перестают верить.
+  const printed = new Set();
+  for (const tool of ['tools/analyzer-run.mjs', 'tools/query-lint.mjs', 'tools/hygiene-check.mjs', 'tools/gate.mjs']) {
+    const src = readFileSync(join(ROOT, tool), 'utf8');
+    for (const m of src.matchAll(/not_verified:\s*dimension=([\w-]+)/g)) printed.add(m[1]);
+  }
+  const known = (validatorSrc.match(/const DIMENSIONS = \[([^\]]+)\]/) || [, ''])[1];
+  const unknown = [...printed].filter((d) => !known.includes(`'${d}'`));
+  check('валидатор знает все измерения, которые печатают инструменты', unknown.length === 0, unknown.join(', '));
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +987,23 @@ const mustContain = [
   ['skills/quality-gate/SKILL.md', 'complexity.maxNesting', 'порог сложности назван ключом настройки'],
   ['skills/quality-gate/SKILL.md', 'config=', 'отметка о настройке переносится в след'],
   ['skills/quality-gate/references/evidence-format.md', 'custom:volume+sentinel', 'формат отметки о настройке описан'],
+  // Затенение колонки псевдонимом источника: ошибка выполнения, которую до продуктива не
+  // ловит ничто — текст запроса для всех инструментов остаётся строковым литералом.
+  ['skills/bsl-code-review/references/bsl-coding-standards.md', 'Неоднозначное поле', 'затенение колонки псевдонимом разобрано в стандартах'],
+  ['skills/bsl-code-review/references/bsl-query-reference.md', 'qg:QRY-ALIAS-SHADOWS-FIELD', 'справочник языка называет эвристику затенения'],
+  ['skills/bsl-code-review/references/checklist-code.md', 'QRY-ALIAS-SHADOWS-FIELD', 'затенение псевдонимом — пункт чеклиста'],
+  ['skills/bsl-code-review/SKILL.md', 'tools/query-lint.mjs', 'контур кода прогоняет лексическую проверку запросов'],
+  // Обратная половина: строгость к ОБЪЕДИНИТЬ не должна уходить в ложные находки. Отсутствие
+  // псевдонимов в неголовной ветке — законная форма, и это сказано прямо.
+  ['skills/bsl-code-review/references/bsl-query-reference.md', 'Имена колонок результата берутся из', 'имена колонок ОБЪЕДИНИТЬ берутся из первой выборки'],
+  ['skills/bsl-code-review/references/bsl-coding-standards.md', 'ложная находка', 'требование псевдонимов в ветке ОБЪЕДИНИТЬ названо ложной находкой'],
+  // Архетип «запрос» обязан отчитаться об исполнении: лексический разбор его не заменяет.
+  ['skills/quality-gate/SKILL.md', 'query-execution', 'оркестратор требует отчёта об исполнении запроса'],
+  ['skills/quality-gate/references/evidence-format.md', 'dimension=query-execution', 'измерение «исполнение запроса» описано в формате следа'],
+  // Верификатор в живом прогоне выдал Critical на законную форму и пропустил настоящий
+  // дефект по соседству. Обе половины должны остаться в его карте проверок.
+  ['agents/bsl-verifier.md', 'query-lint.mjs', 'верификатор прогоняет проверку текстов запросов'],
+  ['agents/bsl-verifier.md', 'ОБЪЕДИНИТЬ', 'верификатору названа законная форма ветки объединения'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
