@@ -49,24 +49,35 @@ export const SCOPES = {
     granularity: 'files',
     applies: ['.bsl', '.os']
   },
+  // `.xml` в applies — не оговорка: query-lint читает XML-носители запросов (`<query>`
+  // схем компоновки, `<QueryText>` динамических списков), и изменённый XML обязан пройти
+  // через него так же, как .bsl. XML без носителей инструмент честно журналирует как
+  // просмотренный — покрытие от этого не страдает.
   'query-alias-shadowing': {
     layer: 'code',
     tool: 'tools/query-lint.mjs',
     about: 'псевдоним источника затеняет колонку временной таблицы',
     granularity: 'files',
-    applies: ['.bsl', '.os']
+    applies: ['.bsl', '.os', '.xml']
   },
   'query-top-order': {
     layer: 'code',
     tool: 'tools/query-lint.mjs',
     about: '«ПЕРВЫЕ N» без «УПОРЯДОЧИТЬ ПО»',
     granularity: 'files',
-    applies: ['.bsl', '.os']
+    applies: ['.bsl', '.os', '.xml']
   },
   'transaction-nesting': {
     layer: 'code',
     tool: 'tools/bsl-lint.mjs',
     about: 'своя транзакция внутри неявной транзакции обработчика',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
+  },
+  'enum-string-assign': {
+    layer: 'code',
+    tool: 'tools/bsl-lint.mjs',
+    about: 'присваивание примитива полю строго ссылочного типа (по XML объекта)',
     granularity: 'files',
     applies: ['.bsl', '.os']
   },
@@ -173,4 +184,66 @@ export const RENAMED = {
 
 export function isKnownScope(scope) {
   return Object.prototype.hasOwnProperty.call(SCOPES, scope);
+}
+
+/**
+ * Реестр признаков — закрытый список законных `qg:*` в поле `ids` записи `applied`.
+ *
+ * Зачем понадобился. Проверка идентификатора по форме (`qg:ЗАГЛАВНЫМИ-ЧЕРЕЗ-ДЕФИС`)
+ * пропускала любое правдоподобное имя: в живой сессии больше половины `qg:*` в отчётах
+ * не существовало в плагине — `qg:XML-VALID` вместо `qg:XML-STRUCT`, `qg:XML-UUID-UNIQUE`
+ * вместо `qg:XML-UUID-DUP`, выдуманные `qg:XML-FIELDS-EXIST` и `qg:SKD-VALID`. Причина не
+ * злая воля: машиночитаемого списка не было, признаки перечислялись прозой в трёх SKILL.md,
+ * и потребитель образовывал имена по аналогии. Отчёт с вымышленными признаками выглядит
+ * при этом строже настоящего.
+ *
+ * Набор дрейфует между версиями (qg:HYG-EOL появился в v2.0.0 — отчёты на v1.3.0 его
+ * «знали» до рождения), поэтому единственный источник истины — этот файл, а полнота
+ * стережётся тестами: признаки ARCH сверяются с `signs-map.json`, признаки AI — с
+ * заголовками `ai-antipatterns.md`, инструментальные — со строками, которые печатают
+ * сами инструменты.
+ *
+ * `tool` — тот же смысл, что в SCOPES: непустой означает «строку печатает инструмент,
+ * заявлять её руками нельзя»; null — признак проверяет модель по чеклисту.
+ */
+const ARCH_SIGNS = Array.from({ length: 11 }, (_, i) => [`qg:ARCH-A${i + 1}`, { tool: null }]);
+const AI_SIGNS = Array.from({ length: 16 }, (_, i) => [`qg:AI-${String(i + 1).padStart(2, '0')}`, { tool: null }]);
+
+/** @type {Record<string, { tool: string|null }>} */
+export const QG_IDS = {
+  // --- гигиена: печатает tools/hygiene-check.mjs ---------------------------
+  'qg:HYG-BOM': { tool: 'tools/hygiene-check.mjs' },
+  'qg:HYG-ENCODING': { tool: 'tools/hygiene-check.mjs' },
+  'qg:HYG-CTRL': { tool: 'tools/hygiene-check.mjs' },
+  'qg:HYG-DASH': { tool: 'tools/hygiene-check.mjs' },
+  'qg:HYG-EOL': { tool: 'tools/hygiene-check.mjs' },
+
+  // --- xml: печатают валидаторы tools/xml/* --------------------------------
+  'qg:XML-STRUCT': { tool: 'tools/xml/meta-validate.py' },
+  'qg:XML-ORPHAN': { tool: 'tools/xml/orphan-check.mjs' },
+  'qg:XML-UUID-DUP': { tool: 'tools/xml/uuid-unique.mjs' },
+  'qg:SKD-PARAM-VT-COLLISION': { tool: 'tools/xml/skd-validate.py' },
+  'qg:SKD-GROUP-NONAGGREGATE-FIELD': { tool: 'tools/xml/skd-validate.py' },
+  'qg:SKD-GROUP-EMPTY-SELECTION': { tool: 'tools/xml/skd-validate.py' },
+
+  // --- код, инструментальные -----------------------------------------------
+  'qg:QRY-ALIAS-SHADOWS-FIELD': { tool: 'tools/query-lint.mjs' },
+  'qg:QRY-TOP-WITHOUT-ORDER': { tool: 'tools/query-lint.mjs' },
+  'qg:BSL-TXN-IN-HANDLER': { tool: 'tools/bsl-lint.mjs' },
+  'qg:BSL-ENUM-STRING-ASSIGN': { tool: 'tools/bsl-lint.mjs' },
+
+  // --- код, модельные ------------------------------------------------------
+  'qg:QRY-EXECUTED': { tool: null },
+  'qg:API-MODULE': { tool: null },
+  'qg:API-SIGNATURE': { tool: null },
+
+  // --- архитектура: состав сверяется тестом с signs-map.json ---------------
+  ...Object.fromEntries(ARCH_SIGNS),
+
+  // --- AI-антипаттерны: состав сверяется тестом с ai-antipatterns.md -------
+  ...Object.fromEntries(AI_SIGNS),
+};
+
+export function isKnownQgId(id) {
+  return Object.prototype.hasOwnProperty.call(QG_IDS, id);
 }

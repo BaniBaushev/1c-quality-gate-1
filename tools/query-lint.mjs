@@ -17,22 +17,29 @@
  * вместо колонки временной таблицы), а проверка «посмотри внимательно» неотличима от
  * непроведённой. Пересечение двух множеств имён считается механически и потому детерминировано.
  *
+ * Носители запросов. Кроме литералов в `.bsl` разбираются XML-носители: `<query>` схемы
+ * компоновки данных (Template.xml отчётов и общих макетов) и `<QueryText>` динамического
+ * списка (Form.xml). Для них номер строки в находке считается ОТ НАЧАЛА ТЕКСТА ЗАПРОСА —
+ * ровно так нумерует строки платформа в своих сообщениях (`{(51, 44)}: Неоднозначное
+ * поле…`), поэтому цифры прямо сопоставимы с ошибкой рантайма.
+ *
  * Приближения заявлены прямо, потому что от них зависит доверие к вердикту:
- *   - разбираются только литералы внутри `.bsl`; тексты запросов в XML (СКД, компоновщики
- *     формы) не читаются;
  *   - запрос, собранный конкатенацией или через `СтрШаблон`, виден лишь частями и потому
  *     пропускается — коллизия между частями не найдётся;
  *   - колонки известны только у временных таблиц пакета. Та же коллизия с именем реквизита
  *     реальной таблицы требует метаданных и здесь не ловится;
+ *   - в XML читаются только известные носители (`<query>`, `<QueryText>`); прочие XML
+ *     считаются файлами без запросов;
  *   - ключевые слова только русские: английский вариант языка запросов платформа понимает,
  *     но в прикладном коде он не встречается.
  *
  * Использование:
- *   node query-lint.mjs <файл.bsl> [<файл.bsl> ...] [--json]
+ *   node query-lint.mjs <файл.bsl|файл.xml> [<файл> ...] [--json]
  */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { recordRun } from './run-journal.mjs';
+import { versionSuffix } from './config.mjs';
 
 /** Символы, из которых состоит идентификатор 1С. Кириллица делает `\b` в JS бесполезной. */
 const W = 'A-Za-zА-Яа-яЁё0-9_';
@@ -179,6 +186,60 @@ export function maskLiteral(raw) {
     out.push(chars.join(''));
   }
   return out.join('\n');
+}
+
+/**
+ * Гасит литералы и комментарии в «голом» тексте запроса — не BSL-литерале, а тексте из
+ * XML-носителя. Отличие от `maskLiteral`: кавычки здесь настоящие (не удвоенные), а
+ * вертикальной черты продолжения нет вовсе.
+ */
+export function maskBareQuery(raw) {
+  const out = [];
+  for (const line of raw.split('\n')) {
+    const chars = line.split('');
+    let inString = false;
+    for (let k = 0; k < chars.length; k++) {
+      if (!inString && chars[k] === '/' && chars[k + 1] === '/') {
+        for (let m = k; m < chars.length; m++) chars[m] = ' ';
+        break;
+      }
+      if (chars[k] === '"') {
+        chars[k] = ' ';
+        inString = !inString;
+        continue;
+      }
+      if (inString) chars[k] = ' ';
+    }
+    out.push(chars.join(''));
+  }
+  return out.join('\n');
+}
+
+/** Пять сущностей, которыми экспорт платформы кодирует текст запроса в XML. `&amp;` — последней. */
+function decodeXmlEntities(s) {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * Извлекает тексты запросов из XML-носителей.
+ *
+ * `fileLine` — строка файла, где начинается текст запроса: по ней находку можно найти в
+ * файле, тогда как `line` самой находки считается внутри текста запроса — как у платформы.
+ */
+export function extractXmlQueries(xml) {
+  const out = [];
+  const re = /<(?:[\w.]+:)?(query|QueryText)(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w.]+:)?\1\s*>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const bodyOffset = m.index + m[0].indexOf('>') + 1;
+    out.push({ text: decodeXmlEntities(m[2]), fileLine: lineAt(xml, bodyOffset) });
+  }
+  return out;
 }
 
 /** Разбивает пакет по `;`. Разделители внутри литералов SDBL уже погашены маской. */
@@ -340,72 +401,100 @@ function lineAt(source, pos) {
  */
 export function lintSource(source) {
   const findings = [];
-
   for (const literal of extractQueryLiterals(source)) {
-    const masked = maskLiteral(literal.raw);
-    const temps = new Map(); // имя ВТ в нижнем регистре → { name, columns }
-
-    for (const query of splitBatch(masked)) {
-      findings.push(...checkTopWithoutOrder(source, literal, query));
-
-      const branches = splitUnionBranches(query);
-
-      for (const branch of branches) {
-        const { aliases, sourcesText } = parseSources(branch);
-        if (aliases.length === 0) continue;
-
-        // Какие временные таблицы пакета участвуют в этой ветке.
-        const used = [];
-        for (const temp of temps.values()) {
-          if (word(temp.name, 'iu').test(sourcesText)) used.push(temp);
-        }
-        if (used.length === 0) continue;
-
-        for (const alias of aliases) {
-          const key = alias.name.toLowerCase();
-          for (const temp of used) {
-            const column = temp.columns.find((c) => c.toLowerCase() === key);
-            if (!column) continue;
-
-            // Падает платформа не на самой коллизии, а на обращении к имени через точку:
-            // именно там `Перемещение.Ссылка` читается и как поле источника, и как
-            // разыменование колонки. Без такого обращения запрос выполнится — но имя уже
-            // заминировано, и первое же добавленное поле его подорвёт.
-            const deref = new RegExp(`(?<![${W}.])${alias.name}\\s*\\.`, 'iu').exec(branch.text);
-            const pos = literal.start + branch.offset + (deref ? deref.index : alias.index);
-
-            findings.push({
-              severity: deref ? 'error' : 'warn',
-              rule: 'qg:QRY-ALIAS-SHADOWS-FIELD',
-              line: lineAt(source, pos),
-              alias: alias.name,
-              temp: temp.name,
-              column,
-              dereferenced: Boolean(deref),
-              message: deref
-                ? `псевдоним источника «${alias.name}» совпадает с колонкой «${column}» временной таблицы ${temp.name}; ` +
-                  `обращение «${alias.name}.…» неоднозначно — платформа откажется выполнять запрос`
-                : `псевдоним источника «${alias.name}» совпадает с колонкой «${column}» временной таблицы ${temp.name}; ` +
-                  'обращения через точку сейчас нет, но любое добавленное поле сделает запрос неоднозначным',
-            });
-          }
-        }
-      }
-
-      // Временная таблица объявляется головной веткой и видна дальше по пакету.
-      const into = parseInto(branches[0]);
-      if (into) temps.set(into.name.toLowerCase(), into);
-    }
+    lintOneLiteral(source, literal, maskLiteral(literal.raw), findings);
   }
-
   return findings;
 }
 
+/**
+ * Проверка «голого» текста запроса из XML-носителя.
+ *
+ * Номера строк в находках — от начала текста запроса: платформа в сообщениях о таких
+ * запросах (`{(N, M)}`) нумерует строки так же, и цифры сопоставимы напрямую.
+ */
+export function lintQueryText(text) {
+  const findings = [];
+  lintOneLiteral(text, { raw: text, start: 0 }, maskBareQuery(text), findings);
+  return findings;
+}
+
+function lintOneLiteral(source, literal, masked, findings) {
+  const temps = new Map(); // имя ВТ в нижнем регистре → { name, columns }
+
+  for (const query of splitBatch(masked)) {
+    findings.push(...checkTopWithoutOrder(source, literal, query));
+
+    const branches = splitUnionBranches(query);
+
+    for (const branch of branches) {
+      const { aliases, sourcesText } = parseSources(branch);
+      if (aliases.length === 0) continue;
+
+      // Какие временные таблицы пакета участвуют в этой ветке.
+      const used = [];
+      for (const temp of temps.values()) {
+        if (word(temp.name, 'iu').test(sourcesText)) used.push(temp);
+      }
+      if (used.length === 0) continue;
+
+      for (const alias of aliases) {
+        const key = alias.name.toLowerCase();
+        for (const temp of used) {
+          const column = temp.columns.find((c) => c.toLowerCase() === key);
+          if (!column) continue;
+
+          // Падает платформа не на самой коллизии, а на обращении к имени через точку:
+          // именно там `Перемещение.Ссылка` читается и как поле источника, и как
+          // разыменование колонки. Без такого обращения запрос выполнится — но имя уже
+          // заминировано, и первое же добавленное поле его подорвёт.
+          const deref = new RegExp(`(?<![${W}.])${alias.name}\\s*\\.`, 'iu').exec(branch.text);
+          const pos = literal.start + branch.offset + (deref ? deref.index : alias.index);
+
+          findings.push({
+            severity: deref ? 'error' : 'warn',
+            rule: 'qg:QRY-ALIAS-SHADOWS-FIELD',
+            line: lineAt(source, pos),
+            alias: alias.name,
+            temp: temp.name,
+            column,
+            dereferenced: Boolean(deref),
+            message: deref
+              ? `псевдоним источника «${alias.name}» совпадает с колонкой «${column}» временной таблицы ${temp.name}; ` +
+                `обращение «${alias.name}.…» неоднозначно — платформа откажется выполнять запрос`
+              : `псевдоним источника «${alias.name}» совпадает с колонкой «${column}» временной таблицы ${temp.name}; ` +
+                'обращения через точку сейчас нет, но любое добавленное поле сделает запрос неоднозначным',
+          });
+        }
+      }
+    }
+
+    // Временная таблица объявляется головной веткой и видна дальше по пакету.
+    const into = parseInto(branches[0]);
+    if (into) temps.set(into.name.toLowerCase(), into);
+  }
+}
+
+/**
+ * Проверяет один файл. `queries` — сколько текстов запросов инструмент в нём УВИДЕЛ:
+ * по этому числу след отличает «запросов нет» от «файл не читался».
+ */
 function checkFile(path) {
   if (!existsSync(path)) {
-    return [{ severity: 'error', rule: 'file-missing', line: 0, message: 'файл не найден' }];
+    return { findings: [{ severity: 'error', rule: 'file-missing', line: 0, message: 'файл не найден' }], queries: 0 };
   }
-  return lintSource(readFileSync(path, 'utf8').replace(/^﻿/, ''));
+  const source = readFileSync(path, 'utf8').replace(/^﻿/, '');
+  if (/\.xml$/i.test(path)) {
+    const queries = extractXmlQueries(source);
+    const findings = [];
+    for (const q of queries) {
+      for (const f of lintQueryText(q.text)) {
+        findings.push({ ...f, queryStartLine: q.fileLine });
+      }
+    }
+    return { findings, queries: queries.length };
+  }
+  return { findings: lintSource(source), queries: extractQueryLiterals(source).length };
 }
 
 /**
@@ -423,17 +512,18 @@ const EVIDENCE_SCOPES = [
 
 function evidenceBlock(findings, queriesSeen, files = []) {
   return EVIDENCE_SCOPES.map(({ scope, id }) => {
-    // Отмечается ЛЮБОЙ исход, включая «правило к этим файлам не относится». Инструмент,
-    // который видел файл и заключил, что запросов в нём нет, сделал работу; без отметки его
-    // `not_applicable` неотличим от той же строки, написанной вместо запуска.
+    // Отмечается ЛЮБОЙ исход. Причина пропуска — `no_queries_found`, а не `not_applicable`:
+    // инструмент читает и .bsl, и XML-носители, поэтому «не применимо» больше не бывает —
+    // бывает «смотрел и запросов не нашёл». Это разные утверждения: первое снимало бы с
+    // инструмента файлы, которые он обязан был прочитать.
     const hit = queriesSeen && findings.some((f) => f.rule === id);
     recordRun({
       scope,
       tool: 'tools/query-lint.mjs',
-      verdict: !queriesSeen ? 'not_applicable' : hit ? 'violation' : 'clean',
+      verdict: !queriesSeen ? 'no_queries_found' : hit ? 'violation' : 'clean',
       files,
     });
-    if (!queriesSeen) return `[qg skipped: layer=code, scope=${scope}, reason=not_applicable]`;
+    if (!queriesSeen) return `[qg skipped: layer=code, scope=${scope}, reason=no_queries_found]`;
     return `[qg applied: layer=code, scope=${scope}, ids=[${id}], verdict=${hit ? `violation:${id}` : 'clean'}]`;
   }).join('\n');
 }
@@ -444,14 +534,14 @@ function main(argv) {
   const files = args.filter((a) => !a.startsWith('--'));
 
   if (files.length === 0) {
-    process.stderr.write('Использование: node query-lint.mjs <файл.bsl> [<файл.bsl> ...] [--json]\n');
+    process.stderr.write('Использование: node query-lint.mjs <файл.bsl|файл.xml> [<файл> ...] [--json]\n');
     return 2;
   }
 
-  const report = files.map((f) => ({ file: f, findings: checkFile(f) }));
+  const report = files.map((f) => ({ file: f, ...checkFile(f) }));
   const errors = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'error').length, 0);
   const warns = report.reduce((n, r) => n + r.findings.filter((x) => x.severity === 'warn').length, 0);
-  const queriesSeen = files.some((f) => existsSync(f) && extractQueryLiterals(readFileSync(f, 'utf8')).length > 0);
+  const queriesSeen = report.some((r) => r.queries > 0);
   const evidence = evidenceBlock(report.flatMap((r) => r.findings), queriesSeen, files);
 
   if (asJson) {
@@ -463,19 +553,27 @@ function main(argv) {
     if (r.findings.length === 0) continue;
     process.stdout.write(`${r.file}\n`);
     for (const f of r.findings) {
-      const where = f.line ? `:${f.line}` : '';
+      // У находки в XML-носителе номер строки — внутри текста запроса (как в сообщениях
+      // платформы); строка файла, с которой запрос начинается, печатается рядом.
+      const where = f.line
+        ? f.queryStartLine
+          ? `:${f.line} (строка в тексте запроса; запрос начинается со строки ${f.queryStartLine} файла)`
+          : `:${f.line}`
+        : '';
       process.stdout.write(`  ${f.severity === 'error' ? 'ОШИБКА' : 'ВНИМАНИЕ'}${where} [${f.rule}] ${f.message}\n`);
     }
     process.stdout.write('\n');
   }
-  process.stdout.write(`Проверено файлов: ${files.length}. Ошибок: ${errors}, предупреждений: ${warns}.\n`);
+  process.stdout.write(`Проверено файлов: ${files.length}. Ошибок: ${errors}, предупреждений: ${warns}.${versionSuffix()}\n`);
   process.stdout.write('\n## quality evidence\n\n' + evidence + '\n');
 
-  // Проверка лексическая и заведомо неполная: тексты запросов из XML и собранные
-  // конкатенацией она не видит. Молчание инструмента не означает, что запрос исполним.
+  // Проверка лексическая и заведомо неполная: запросы, собранные конкатенацией, и XML-носители
+  // за пределами известных (<query>, <QueryText>) она не видит. Молчание не означает, что
+  // запрос исполним.
   if (!errors && !warns && queriesSeen) {
     process.stdout.write(
-      '\nПроверены только литералы в .bsl. Выполнимость запроса не проверяется — это делает платформа.\n'
+      '\nПроверены литералы в .bsl и тексты запросов в XML-носителях (СКД, динамические списки). ' +
+        'Выполнимость запроса не проверяется — это делает платформа.\n'
     );
   }
 

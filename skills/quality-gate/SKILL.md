@@ -185,13 +185,16 @@ node "$QG/tools/config.mjs" show
 проверяется так же: это тоже утверждение о работе инструмента.
 
 Гонять инструмент по частям можно — прогоны складываются. Передавай ему все изменённые файлы
-своего вида: список даёт `gate.mjs status`.
+своего вида: список даёт `gate.mjs status`. **`query-lint` принимает не только `.bsl`:
+изменённые XML тоже передаются ему** — он читает тексты запросов из `<query>` схем
+компоновки данных и `<QueryText>` динамических списков, а XML без запросов честно отмечает
+как просмотренный. Покрытие по `.xml` сверяется так же, как по `.bsl`.
 
 | Проверка (`scope`) | Инструмент |
 |---|---|
 | `static-analysis` | `tools/analyzer-run.mjs` |
-| `query-alias-shadowing`, `query-top-order` | `tools/query-lint.mjs` |
-| `transaction-nesting` | `tools/bsl-lint.mjs` |
+| `query-alias-shadowing`, `query-top-order` | `tools/query-lint.mjs` (`.bsl` и `.xml`) |
+| `transaction-nesting`, `enum-string-assign` | `tools/bsl-lint.mjs` |
 | `file-encoding` | `tools/hygiene-check.mjs` |
 | `registration-check` | `tools/xml/orphan-check.mjs` |
 | `uuid-uniqueness` | `tools/xml/uuid-unique.mjs` |
@@ -322,11 +325,16 @@ node "$QG/tools/gate.mjs" release --class C0 --reason "<почему>"
 (состояние оболочки между вызовами не сохраняется):
 
 ```bash
-QG="${CLAUDE_PLUGIN_ROOT:-$(ls -d ~/.claude/plugins/cache/*/1c-quality-gate/*/ 2>/dev/null | tail -1)}"; QG="${QG%/}"; echo "$QG"
+QG="${CLAUDE_PLUGIN_ROOT:-$(node -e "const p=require(require('node:os').homedir()+'/.claude/plugins/installed_plugins.json').plugins;const k=Object.keys(p).find(n=>n.startsWith('1c-quality-gate@'));if(k&&p[k][0])process.stdout.write(p[k][0].installPath)" 2>/dev/null)}"
+QG="${QG:-$(ls -d ~/.claude/plugins/cache/*/1c-quality-gate/*/ 2>/dev/null | sort -V | tail -1)}"; QG="${QG%/}"; echo "$QG"
 ```
 
-Конструкция работает в обоих случаях: если переменная задана — берётся она, иначе путь
-находится в кэше плагинов. Полученное значение подставляй в последующие команды вместо `$QG`.
+Порядок источников не случаен: `installed_plugins.json` — указатель на АКТИВНУЮ версию,
+который ведёт сам Claude Code. Перебор каталогов кэша — только запасной путь, и обязательно
+через `sort -V`: в кэше лежат все установленные версии, а лексикографический порядок ставит
+`0.10.0` раньше `0.9.0` — сессия работает инструментами устаревшей версии и честно
+отчитывается, что проверок «не существует». Инструменты печатают свою версию в выводе —
+сверь её с ожидаемой, если поведение выглядит устаревшим.
 
 НЕ снимай гейт, если прогон прерван на полпути и отчёт не сформирован: гейт должен
 остаться, чтобы проверка прогналась заново.

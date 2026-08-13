@@ -38,7 +38,7 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readManifest, installed as bootstrapInstalled, install as installAnalyzer } from './analyzer-bootstrap.mjs';
-import { DEFAULTS, readConfig } from './config.mjs';
+import { DEFAULTS, readConfig, versionSuffix } from './config.mjs';
 import { resolveProjectRoot as resolveRoot } from './project-root.mjs';
 import { recordRun } from './run-journal.mjs';
 
@@ -719,7 +719,7 @@ async function main(argv) {
       out(`НЕ АНАЛИЗИРОВАЛИСЬ: ${unanalyzed.length} — движок не видел этих файлов, «чисто» к ним не относится:`);
       for (const f of unanalyzed) out(`  ${f}`);
     }
-    out(`Движок: ${engine}${version ? ' ' + version : ''} | часовой: ${sentinelResult.status} | находок: ${findings.length}`);
+    out(`Движок: ${engine}${version ? ' ' + version : ''} | часовой: ${sentinelResult.status} | находок: ${findings.length}${versionSuffix()}`);
     report(findings, out, { all: args.all });
   }
   out('\n## quality evidence\n');

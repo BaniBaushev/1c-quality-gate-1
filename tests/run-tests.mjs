@@ -317,8 +317,9 @@ section('Запросы — НЕ придирается к корректным 
   const f = writeBytes('qry-none.bsl', 'Процедура Т()\n\tА = 1;\nКонецПроцедуры\n');
   const r = run('tools/query-lint.mjs', [f]);
   check('файл без запросов — чисто', r.code === 0);
-  // Инструмент, промолчавший о том, что проверять было нечего, неотличим от прогнавшего проверку.
-  check('отсутствие запросов заявлено записью следа', r.out.includes('[qg skipped: layer=code, scope=query-alias-shadowing, reason=not_applicable]'),
+  // Инструмент, промолчавший о том, что проверять было нечего, неотличим от прогнавшего
+  // проверку. Причина — no_queries_found, а не not_applicable: инструмент файл ЧИТАЛ.
+  check('отсутствие запросов заявлено записью следа', r.out.includes('[qg skipped: layer=code, scope=query-alias-shadowing, reason=no_queries_found]'),
     r.out.trim().slice(0, 160));
 }
 {
@@ -428,6 +429,98 @@ section('Запросы — ПЕРВЫЕ N без УПОРЯДОЧИТЬ ПО');
 }
 
 // ---------------------------------------------------------------------------
+section('Запросы — XML-носители: СКД и динамические списки');
+
+// Отчёт на СКД — файл, где вся логика живёт в <query> Template.xml. До поддержки XML
+// инструмент отвечал на него not_applicable, и коллизия псевдонима доживала до пользователя
+// ошибкой «Неоднозначное поле» при первом же формировании отчёта.
+const skdXml = (name, queryBody) => writeBytes(name,
+  '<?xml version="1.0" encoding="UTF-8"?>\n' +
+  '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" ' +
+  'xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n' +
+  '\t<dataSource>\n\t\t<name>ИсточникДанных1</name>\n\t\t<dataSourceType>Local</dataSourceType>\n\t</dataSource>\n' +
+  '\t<dataSet xsi:type="DataSetQuery">\n\t\t<name>НаборДанных1</name>\n\t\t<dataSource>ИсточникДанных1</dataSource>\n' +
+  '\t\t<query>' + queryBody + '</query>\n' +
+  '\t</dataSet>\n' +
+  '</DataCompositionSchema>\n');
+
+// Тот же пакет, что в каноническом BSL-кейсе, но в XML: сущности вместо <, > и кавычек.
+const skdCollisionQuery = [
+  'ВЫБРАТЬ',
+  '\tПеремещение.Ссылка КАК Перемещение',
+  'ПОМЕСТИТЬ ВТ_Связи',
+  'ИЗ',
+  '\tДокумент.ПеремещениеТоваров КАК Перемещение',
+  'ГДЕ',
+  '\tПеремещение.Номер &lt;&gt; &quot;000&quot;',
+  ';',
+  '',
+  'ВЫБРАТЬ',
+  '\tСвязи.Перемещение КАК Перемещение',
+  'ИЗ',
+  '\tВТ_Связи КАК Связи',
+  '\t\tВНУТРЕННЕЕ СОЕДИНЕНИЕ Документ.ПеремещениеТоваров КАК Перемещение',
+  '\t\tПО Связи.Перемещение = Перемещение.Ссылка',
+].join('\n');
+
+{
+  const f = skdXml('skd-collision/Template.xml', skdCollisionQuery);
+  const r = run('tools/query-lint.mjs', [f]);
+  check('коллизия в <query> СКД — находка', r.out.includes('QRY-ALIAS-SHADOWS-FIELD'), r.out.trim().slice(0, 160));
+  check('коллизия в СКД даёт код 2', r.code === 2, `код ${r.code}`);
+  // Номер строки — внутри текста запроса, как в сообщениях платформы {(N, M)}: разыменование
+  // «Перемещение.Ссылка» стоит на 15-й строке пакета.
+  check('строка находки считается от начала запроса', r.out.includes('ОШИБКА:15'), r.out.trim().slice(0, 200));
+  check('начало запроса в файле названо', /запрос начинается со строки \d+ файла/.test(r.out), r.out.trim().slice(0, 200));
+  check('в следе applied, а не skipped', r.out.includes('scope=query-alias-shadowing, ids=[qg:QRY-ALIAS-SHADOWS-FIELD], verdict=violation'),
+    r.out.split('## quality evidence')[1]?.trim().slice(0, 200));
+}
+{
+  // Контр-сигнал: переименованный псевдоним обязан давать ноль находок — ровно то лечение,
+  // которое предлагает текст находки.
+  const fixed = [
+    'ВЫБРАТЬ',
+    '\tПеремещение.Ссылка КАК Перемещение',
+    'ПОМЕСТИТЬ ВТ_Связи',
+    'ИЗ',
+    '\tДокумент.ПеремещениеТоваров КАК Перемещение',
+    ';',
+    '',
+    'ВЫБРАТЬ',
+    '\tСвязи.Перемещение КАК Перемещение',
+    'ИЗ',
+    '\tВТ_Связи КАК Связи',
+    '\t\tВНУТРЕННЕЕ СОЕДИНЕНИЕ Документ.ПеремещениеТоваров КАК ДокПеремещение',
+    '\t\tПО Связи.Перемещение = ДокПеремещение.Ссылка',
+  ].join('\n');
+  const f = skdXml('skd-fixed/Template.xml', fixed);
+  const r = run('tools/query-lint.mjs', [f]);
+  check('переименованный псевдоним в СКД — чисто', r.code === 0, r.out.trim().slice(0, 160));
+}
+{
+  // Динамический список: запрос живёт в <QueryText> Form.xml — тот же класс носителя.
+  const f = writeBytes('dynlist/Form.xml',
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\n' +
+    '\t<Attributes>\n\t\t<Attribute name="Список" id="1">\n\t\t\t<Settings xsi:type="DynamicListExtInfo">\n' +
+    '\t\t\t\t<QueryText>ВЫБРАТЬ ПЕРВЫЕ 10\n\tЗаказы.Ссылка КАК Ссылка\nИЗ\n\tДокумент.ЗаказКлиента КАК Заказы</QueryText>\n' +
+    '\t\t\t</Settings>\n\t\t</Attribute>\n\t</Attributes>\n' +
+    '</Form>\n');
+  const r = run('tools/query-lint.mjs', [f]);
+  check('ПЕРВЫЕ N в динамическом списке — находка', r.out.includes('QRY-TOP-WITHOUT-ORDER'), r.out.trim().slice(0, 160));
+  check('находка динсписка не блокирующая (код 1)', r.code === 1, `код ${r.code}`);
+}
+{
+  // XML без носителей запросов: инструмент файл читал — след говорит «запросов нет», а не
+  // «не применимо». Файл, чьи запросы инструмент не умеет читать, больше не маскируется.
+  const f = writeBytes('no-queries/Role.xml',
+    '<?xml version="1.0" encoding="UTF-8"?>\n<Rights xmlns="http://v8.1c.ru/8.2/roles"><setForNewObjects>false</setForNewObjects></Rights>\n');
+  const r = run('tools/query-lint.mjs', [f]);
+  check('XML без запросов — чисто', r.code === 0, r.out.trim().slice(0, 120));
+  check('причина пропуска — no_queries_found', r.out.includes('reason=no_queries_found'), r.out.trim().slice(-200));
+}
+
+// ---------------------------------------------------------------------------
 section('Транзакция внутри обработчика с неявной транзакцией');
 
 // Платформа открывает транзакцию вокруг записи, удаления и проведения. Вложенных не
@@ -512,6 +605,84 @@ section('Транзакция внутри обработчика с неявн�
     '[qg not_verified: dimension=compilation, reason=no_platform]\n');
   const r = run('tools/evidence-validator.mjs', [report, '--gate']);
   check('запись следа из bsl-lint проходит валидатор', r.code === 0, `${printed} → ${r.out.trim().slice(0, 140)}`);
+}
+
+// ---------------------------------------------------------------------------
+section('Присваивание примитива полю ссылочного типа');
+
+// Класс молчит на сборке: тела модулей не компилируются, а падение приходит при записи —
+// часто в редко исполняемой ветке. В живом расширении: одно `= ""` против семнадцати
+// корректных `.ПустаяСсылка()` — след смены типа реквизита, при которой код не пересмотрели.
+{
+  writeBytes('enum-assign/InformationRegisters/Состояния.xml', [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">',
+    '\t<InformationRegister uuid="00000000-0000-0000-0000-000000000001">',
+    '\t\t<Properties>',
+    '\t\t\t<Name>Состояния</Name>',
+    '\t\t</Properties>',
+    '\t\t<ChildObjects>',
+    '\t\t\t<Resource uuid="00000000-0000-0000-0000-000000000002">',
+    '\t\t\t\t<Properties>',
+    '\t\t\t\t\t<Name>СтатусДоставки</Name>',
+    '\t\t\t\t\t<Type>',
+    '\t\t\t\t\t\t<v8:Type>cfg:EnumRef.СтатусыДоставки</v8:Type>',
+    '\t\t\t\t\t</Type>',
+    '\t\t\t\t</Properties>',
+    '\t\t\t</Resource>',
+    '\t\t\t<Attribute uuid="00000000-0000-0000-0000-000000000003">',
+    '\t\t\t\t<Properties>',
+    '\t\t\t\t\t<Name>Комментарий</Name>',
+    '\t\t\t\t\t<Type>',
+    '\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>',
+    '\t\t\t\t\t</Type>',
+    '\t\t\t\t</Properties>',
+    '\t\t\t</Attribute>',
+    '\t\t\t<Attribute uuid="00000000-0000-0000-0000-000000000004">',
+    '\t\t\t\t<Properties>',
+    '\t\t\t\t\t<Name>Основание</Name>',
+    '\t\t\t\t\t<Type>',
+    '\t\t\t\t\t\t<v8:Type>cfg:DocumentRef.Заказ</v8:Type>',
+    '\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>',
+    '\t\t\t\t\t</Type>',
+    '\t\t\t\t</Properties>',
+    '\t\t\t</Attribute>',
+    '\t\t</ChildObjects>',
+    '\t</InformationRegister>',
+    '</MetaDataObject>',
+  ].join('\n'));
+  const f = writeBytes('enum-assign/InformationRegisters/Состояния/Ext/RecordSetModule.bsl', [
+    'Процедура ПередЗаписью(Отказ, Замещение)',
+    '\tДля Каждого Запись Из ЭтотОбъект Цикл',
+    '\t\tЗапись.СтатусДоставки = "";',
+    '\t\tЗапись.Комментарий = "";',
+    '\t\tЗапись.Основание = "";',
+    '\t\tЕсли Запись.СтатусДоставки = "" Тогда',
+    '\t\t\tЗапись.СтатусДоставки = Перечисления.СтатусыДоставки.ПустаяСсылка();',
+    '\t\tКонецЕсли;',
+    '\tКонецЦикла;',
+    'КонецПроцедуры',
+  ].join('\n'));
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('примитив в ссылочный ресурс — находка', r.out.includes('BSL-ENUM-STRING-ASSIGN'), r.out.trim().slice(0, 200));
+  check('находка не блокирующая (код 1)', r.code === 1, `код ${r.code}`);
+  check('в находке готовая замена', r.out.includes('Перечисления.СтатусыДоставки.ПустаяСсылка()'), r.out.trim().slice(0, 300));
+  check('заявлено, что приёмник не разрешается', r.out.includes('находка ложная'), r.out.trim().slice(0, 300));
+  // Контр-сигналы: строковое поле, составной тип, сравнение в «Если» и присваивание
+  // ПустаяСсылка() находок не дают — ровно одна находка на модуль, на строке 3.
+  const hits = (r.out.match(/ВНИМАНИЕ:(\d+)/g) || []);
+  check('строка, составной тип, сравнение и ПустаяСсылка — молчание',
+    hits.length === 1 && hits[0] === 'ВНИМАНИЕ:3', `находки: ${hits.join(', ')}`);
+  check('в записи следа свой scope', r.out.includes('scope=enum-string-assign, ids=[qg:BSL-ENUM-STRING-ASSIGN], verdict=violation'),
+    r.out.split('## quality evidence')[1]?.trim());
+}
+{
+  // Модуль вне выгрузки метаданных: XML объекта не найден — пропуск с причиной, а не «чисто».
+  const f = writeBytes('enum-noxml/ObjectModule.bsl', 'Процедура ПриЗаписи(Отказ)\n\tА = 1;\nКонецПроцедуры\n');
+  const r = run('tools/bsl-lint.mjs', [f]);
+  check('без XML объекта — skipped no_metadata_resolved',
+    r.out.includes('[qg skipped: layer=code, scope=enum-string-assign, reason=no_metadata_resolved]'),
+    r.out.trim().slice(-220));
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +866,40 @@ if (python.ok) {
     check(`${name}: корректный файл проходит чисто`, good.code === 0 && /Validation OK/.test(good.out), good.out.trim().slice(0, 110));
     const bad = runPy(pyTool(name), ['-Path', brokenPath]);
     check(`${name}: найден дефект — ${defect}`, bad.code === 1 && bad.out.includes(marker), bad.out.trim().slice(0, 110));
+  }
+
+  // Семантика СКД поверх структуры: оба класса — полный отказ формирования при валидном
+  // XML. До этих проверок файл проходил валидатор чисто и падал у пользователя на первом же
+  // запуске отчёта: «Несоответствие типов (Параметр номер 1)» и «Поле … не может быть
+  // использовано в группировке».
+  {
+    const vt = runPy(pyTool('skd'), ['-Path', xml('skd', 'param-vt-collision.xml')]);
+    check('skd: StandardPeriod-параметр против периодической ВТ — ошибка',
+      vt.code === 1 && vt.out.includes('qg:SKD-PARAM-VT-COLLISION'), vt.out.trim().slice(0, 160));
+    check('skd: в находке названы оба лечения', vt.out.includes('СрезПоследних(, )') && vt.out.includes('Переименуйте'),
+      vt.out.trim().slice(0, 240));
+
+    // Контр-сигналы: явно занятые слоты отключают автозаполнение, параметр типа Дата —
+    // законная автоподстановка. Ложная находка здесь дороже пропущенной.
+    const explicit = runPy(pyTool('skd'), ['-Path', xml('skd', 'param-vt-explicit.xml')]);
+    check('skd: занятые слоты ВТ — молчание', explicit.code === 0 && /Validation OK/.test(explicit.out), explicit.out.trim().slice(0, 140));
+    const dated = runPy(pyTool('skd'), ['-Path', xml('skd', 'param-vt-date.xml')]);
+    check('skd: параметр Период типа Дата — молчание', dated.code === 0 && /Validation OK/.test(dated.out), dated.out.trim().slice(0, 140));
+
+    const gnaf = runPy(pyTool('skd'), ['-Path', xml('skd', 'group-nonaggregate.xml')]);
+    check('skd: неагрегатное поле в выборке группировки — ошибка',
+      gnaf.code === 1 && gnaf.out.includes('qg:SKD-GROUP-NONAGGREGATE-FIELD') && gnaf.out.includes('ЕстьРазрыв'),
+      gnaf.out.trim().slice(0, 200));
+
+    // Накопление по иерархии обязательно: поле родительской группировки, реквизит поля
+    // группировки (Товар.Артикул), ресурс и выборка с Авто — всё законные формы.
+    const gok = runPy(pyTool('skd'), ['-Path', xml('skd', 'group-hierarchy-ok.xml')]);
+    check('skd: реквизиты, ресурсы, поля родителя и Авто — молчание',
+      gok.code === 0 && /Validation OK/.test(gok.out), gok.out.trim().slice(0, 200));
+
+    const gempty = runPy(pyTool('skd'), ['-Path', xml('skd', 'group-empty-selection.xml')]);
+    check('skd: пустая выборка группировки — предупреждение, не блок',
+      gempty.code === 0 && gempty.out.includes('qg:SKD-GROUP-EMPTY-SELECTION'), gempty.out.trim().slice(0, 200));
   }
 
   // Валидатор роли проверяет Rights.xml, а путь ему дают тремя разными способами. Раньше файл
@@ -1043,6 +1248,70 @@ section('Механика гейта');
   const relOk = run('tools/gate.mjs', ['release', '--evidence', ev('valid.md'), '--session', 'S1'], { env });
   check('снятие по валидному следу проходит', relOk.code === 0, relOk.out.trim().slice(0, 120));
   check('после снятия Stop пропускает', stop('S1') === 0);
+}
+
+// ---------------------------------------------------------------------------
+section('Свежесть артефактов при снятии гейта');
+
+// Сценарий: дефект исправлен в исходниках в 00:09, пользователь в 00:10 запустил сборку от
+// 00:06 и получил ошибку, которой в исходниках уже нет. Гейт формально чист — потому при
+// снятии он сверяет mtime артефактов с исходниками по парам из настройки проекта.
+{
+  const { utimesSync } = await import('node:fs');
+  const proj = join(WORK, 'stale-proj');
+  rmSync(proj, { recursive: true, force: true });
+  mkdirSync(join(proj, 'src', 'xml', 'Обработка'), { recursive: true });
+  mkdirSync(join(proj, 'build'), { recursive: true });
+  mkdirSync(join(proj, '.claude', '.state'), { recursive: true });
+  const env = { CLAUDE_PROJECT_DIR: proj };
+
+  writeFileSync(
+    join(proj, '.1c-quality-gate.json'),
+    JSON.stringify({ artifacts: { pairs: [{ source: 'src/xml/Обработка', artifact: 'build/Обработка.epf' }] } }),
+    'utf8'
+  );
+  const srcFile = join(proj, 'src', 'xml', 'Обработка', 'Module.bsl');
+  const artFile = join(proj, 'build', 'Обработка.epf');
+  writeFileSync(srcFile, BOM + 'Процедура П()\r\nКонецПроцедуры\r\n', 'utf8');
+  writeFileSync(artFile, 'бинарник', 'utf8');
+  // Возраст задаётся явно: полагаться на порядок записи при гранулярности mtime нельзя.
+  const hourAgo = new Date(Date.now() - 3600_000);
+  utimesSync(artFile, hourAgo, hourAgo);
+
+  const armSession = (id) =>
+    writeFileSync(
+      join(proj, '.claude', '.state', 'qg-pending.json'),
+      JSON.stringify({
+        version: 2,
+        sessions: {
+          [id]: {
+            armedAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z',
+            files: { 'src/xml/Обработка/Module.bsl': { kind: 'bsl', edits: 1 } },
+          },
+        },
+      }),
+      'utf8'
+    );
+
+  armSession('A1');
+  const rel = run('tools/gate.mjs', ['release', '--class', 'C0', '--reason', 'правка комментария в модуле'], { env });
+  check('устаревший артефакт даёт предупреждение при снятии',
+    rel.code === 0 && rel.out.includes('artifact_older_than_sources'), rel.out.trim().slice(0, 240));
+  check('артефакт и свежий исходник названы',
+    rel.out.includes('build/Обработка.epf') && rel.out.includes('Module.bsl'), rel.out.trim().slice(0, 240));
+  const done = JSON.parse(readFileSync(join(proj, '.claude', '.state', 'qg-done.json'), 'utf8'));
+  check('предупреждение о сборке записано в журнал снятий',
+    (done.sessions.A1.warnings || []).some((w) => String(w.message).includes('старше исходника')),
+    JSON.stringify(done.sessions.A1.warnings));
+
+  // Контр-сигнал: свежая сборка — молчание. Предупреждение на каждом снятии превращает
+  // проверку в шум, который перестают читать.
+  writeFileSync(artFile, 'бинарник новее', 'utf8');
+  armSession('A2');
+  const rel2 = run('tools/gate.mjs', ['release', '--class', 'C0', '--reason', 'правка комментария в модуле'], { env });
+  check('свежий артефакт — молчание', rel2.code === 0 && !rel2.out.includes('artifact_older_than_sources'),
+    rel2.out.trim().slice(0, 200));
 }
 
 // ---------------------------------------------------------------------------
@@ -1623,25 +1892,100 @@ section('Часовой проверяется по целям, а не «хот
   const r3 = run('tools/evidence-validator.mjs', [dead, '--gate']);
   check('часовой по анализатору не подтверждён — след отвергнут', r3.code === 2);
 
-  // Идентификатор нашей эвристики бывает составным: qg:AI-CONTRACT-RECHECK, не только qg:ARCH-A1.
+  // Идентификатор нашей эвристики бывает составным: qg:QRY-ALIAS-SHADOWS-FIELD, не только qg:ARCH-A1.
   const compound = writeBytes(
     'ev-compound.md',
-    head + v8 + '[qg applied: layer=code, scope=t, ids=[qg:AI-CONTRACT-RECHECK], verdict=clean]\n' + notVerified
+    head + v8 + '[qg applied: layer=code, scope=api-verification, ids=[qg:API-SIGNATURE,qg:API-MODULE], verdict=clean]\n' + notVerified
   );
   const rc = run('tools/evidence-validator.mjs', [compound]);
-  check('составной идентификатор эвристики принимается', !rc.out.includes('непохож'), rc.out.trim().slice(0, 120));
+  check(
+    'составной идентификатор из реестра принимается',
+    !rc.out.includes('непохож') && !rc.out.includes('не из реестра признаков'),
+    rc.out.trim().slice(0, 120)
+  );
 
   const bogus = writeBytes(
     'ev-bogus.md',
     head + v8 + '[qg applied: layer=code, scope=t, ids=[qg:X], verdict=clean]\n' + notVerified
   );
   const rb = run('tools/evidence-validator.mjs', [bogus]);
-  check('односегментный идентификатор по-прежнему отвергается', rb.out.includes('непохож'));
+  check('односегментный идентификатор по-прежнему отвергается', rb.out.includes('не из реестра признаков'));
 
   // Нарушения не требуют часового: «нашли» самодостаточно, недостоверно только «не нашли».
   const onlyViolations = writeBytes('ev-viol.md', head + v8 + '[qg applied: layer=code, scope=static-analysis, ids=[bslls:MagicNumber], verdict=violation:bslls:MagicNumber]\n');
   const r4 = run('tools/evidence-validator.mjs', [onlyViolations, '--gate'], sp);
   check('вердикт с нарушениями не требует часового по анализатору', r4.code === 0, r4.out.trim().slice(0, 120));
+}
+
+// ---------------------------------------------------------------------------
+section('Реестр признаков — вымышленный qg:* не проходит');
+
+{
+  const head = '## quality evidence\n\n[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1, config=default]\n';
+  const notVerified = '[qg not_verified: dimension=compilation, reason=no_platform]\n';
+
+  // Идентификаторы из живой сессии, прошедшие --gate до появления реестра: правдоподобные
+  // имена, образованные по аналогии с настоящими. Каждый обязан давать ошибку, а не warn.
+  for (const fake of ['qg:XML-VALID', 'qg:XML-UUID-UNIQUE', 'qg:XML-FIELDS-EXIST', 'qg:SKD-VALID', 'qg:HYG-CHARS']) {
+    const f = writeBytes(`ev-fake-${fake.replace(/[^A-Za-z0-9]+/g, '_')}.md`,
+      head + `[qg applied: layer=xml, scope=structure-validation, ids=[${fake}], verdict=clean]\n` + notVerified);
+    const r = run('tools/evidence-validator.mjs', [f]);
+    check(`вымышленный ${fake} — ошибка реестра`, r.code === 2 && r.out.includes('не из реестра признаков'), r.out.trim().slice(0, 160));
+  }
+
+  // Чужие пространства реестром не проверяются — форма осталась единственным требованием.
+  const foreign = writeBytes('ev-foreign.md',
+    head + '[qg applied: layer=code, scope=query-in-loop, ids=[std436,bslls:QueryInLoop,acc:1234], verdict=clean]\n' + notVerified);
+  const rf = run('tools/evidence-validator.mjs', [foreign]);
+  check('чужие пространства проходят по форме', !rf.out.includes('не из реестра признаков'), rf.out.trim().slice(0, 160));
+}
+
+// ---------------------------------------------------------------------------
+section('Реестр признаков — полнота: источники истины не разъезжаются');
+
+{
+  const scopesMod = await import(pathToFileURL(join(ROOT, 'tools', 'evidence-scopes.mjs')).href);
+  const registry = scopesMod.QG_IDS;
+
+  // Каждый архитектурный признак из signs-map.json есть в реестре — и наоборот.
+  const signsMap = JSON.parse(readFileSync(join(ROOT, 'skills', 'bsl-architecture-review', 'references', 'signs-map.json'), 'utf8'));
+  const archInMap = signsMap.signs.map((s) => `qg:${s.id}`);
+  const archMissing = archInMap.filter((id) => !registry[id]);
+  check('все признаки signs-map.json в реестре', archMissing.length === 0, archMissing.join(', '));
+  const archInRegistry = Object.keys(registry).filter((id) => id.startsWith('qg:ARCH-'));
+  const archOrphans = archInRegistry.filter((id) => !archInMap.includes(id));
+  check('в реестре нет ARCH-признаков, которых нет в signs-map.json', archOrphans.length === 0, archOrphans.join(', '));
+
+  // Каждый AI-антипаттерн из ai-antipatterns.md есть в реестре — и наоборот.
+  const aiDoc = readFileSync(join(ROOT, 'skills', 'bsl-code-review', 'references', 'ai-antipatterns.md'), 'utf8');
+  const aiInDoc = [...aiDoc.matchAll(/^### (AI-\d{2})\b/gmu)].map((m) => `qg:${m[1]}`);
+  check('AI-антипаттерны в документе есть', aiInDoc.length >= 16, `найдено ${aiInDoc.length}`);
+  const aiMissing = aiInDoc.filter((id) => !registry[id]);
+  check('все AI-антипаттерны в реестре', aiMissing.length === 0, aiMissing.join(', '));
+  const aiOrphans = Object.keys(registry).filter((id) => id.startsWith('qg:AI-')).filter((id) => !aiInDoc.includes(id));
+  check('в реестре нет AI-признаков, которых нет в документе', aiOrphans.length === 0, aiOrphans.join(', '));
+
+  // Каждый qg:* из исходников инструментов есть в реестре: инструмент, печатающий признак,
+  // о котором реестр не знает, делал бы вымышленным собственный след.
+  const { readdirSync, statSync } = await import('node:fs');
+  const toolFiles = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(mjs|py)$/.test(e)) toolFiles.push(p);
+    }
+  };
+  walk(join(ROOT, 'tools'));
+  const ID_IN_SOURCE = /qg:[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+/g;
+  const unknown = [];
+  for (const p of toolFiles) {
+    if (p.endsWith('evidence-scopes.mjs')) continue; // сам реестр: шаблонные строки вида qg:ARCH-A${i}
+    for (const m of readFileSync(p, 'utf8').matchAll(ID_IN_SOURCE)) {
+      if (!registry[m[0]]) unknown.push(`${p.slice(ROOT.length + 1)}: ${m[0]}`);
+    }
+  }
+  check('каждый qg:* из инструментов есть в реестре', unknown.length === 0, [...new Set(unknown)].join('; '));
 }
 
 // ---------------------------------------------------------------------------
@@ -1890,15 +2234,26 @@ section('Покрытие: прогон по одному файлу не зак
   const cov = journal.coveredFiles(proj, 'file-encoding');
   check('покрытие складывается по всем прогонам', cov.files.size === 2, [...cov.files].join(', '));
 
-  // Маска применимости: от проверки текстов запросов не требуется покрытие XML.
+  // Применимость по расширениям: XML — тоже носитель запросов (<query> СКД, <QueryText>
+  // динсписков), и правка XML требует прогона query-lint так же, как правка .bsl. До
+  // поддержки XML-носителей расширение исключалось из применимости — и отчёт на СКД
+  // проходил гейт с непроверенным запросом.
   armed(['src/cf/Catalogs/Товары.xml']);
   const xmlOnly = writeBytes(
     'ev-coverage-xml.md',
     head + '[qg applied: layer=code, scope=query-top-order, ids=[qg:QRY-TOP-WITHOUT-ORDER], verdict=clean]\n' + tail
   );
   run('tools/query-lint.mjs', [first], { env });
-  const masked = run('tools/evidence-validator.mjs', [xmlOnly, '--gate'], { env });
-  check('XML не требует покрытия проверкой запросов', masked.code === 0, masked.out.trim().slice(0, 170));
+  const notCovered = run('tools/evidence-validator.mjs', [xmlOnly, '--gate'], { env });
+  check('изменённый XML требует покрытия проверкой запросов',
+    notCovered.code === 2 && notCovered.out.includes('товары.xml'), notCovered.out.trim().slice(0, 200));
+
+  const catXml = join(proj, 'src', 'cf', 'Catalogs', 'Товары.xml');
+  mkdirSync(dirname(catXml), { recursive: true });
+  writeFileSync(catXml, '<?xml version="1.0" encoding="UTF-8"?>\n<MetaDataObject/>\n', 'utf8');
+  run('tools/query-lint.mjs', [catXml], { env });
+  const covered = run('tools/evidence-validator.mjs', [xmlOnly, '--gate'], { env });
+  check('после прогона query-lint по XML след принят', covered.code === 0, covered.out.trim().slice(0, 200));
 
   // Каталог объекта покрывает файлы внутри: валидаторам XML путь дают и так, и так.
   armed(['src/cf/Roles/QG_Роль/Ext/Rights.xml']);
@@ -2127,6 +2482,42 @@ section('Непроанализированные файлы не выдаютс
   );
   const rd = run('tools/evidence-validator.mjs', [declared, '--gate'], { env });
   check('заявленные непроверенные файлы принимаются', rd.code === 0, rd.out.trim().slice(0, 150));
+
+  // Регресс кейса из боевой сессии: BSL внешних обработок и отчётов (`src/xml/**`) лежит вне
+  // корней конфигурации — движок его не видит. Такие файлы обязаны попадать в orphans (и
+  // дальше в unanalyzed с записью not_verified), а не молча исчезать под вердиктом «clean».
+  const erfProj = join(WORK, 'erf-proj');
+  rmSync(erfProj, { recursive: true, force: true });
+  const erfModule = join(erfProj, 'src', 'xml', 'erf', 'Отчёт', 'Ext', 'ObjectModule.bsl');
+  mkdirSync(dirname(erfModule), { recursive: true });
+  writeFileSync(erfModule, BOM + 'Процедура П()\nКонецПроцедуры\n', 'utf8');
+  const grouped = analyzer.groupByConfigRoot([erfModule], erfProj);
+  check('BSL вне корней конфигурации попадает в orphans', grouped.orphans.includes(erfModule),
+    `orphans: ${grouped.orphans.join(', ')} groups: ${grouped.groups.size}`);
+  const erfEv = analyzer.toEvidence({
+    findings: [],
+    sentinelResult: { status: 'found' },
+    engine: 'bsl-analyzer',
+    version: '0.2.66',
+    unanalyzed: ['src/xml/erf/Отчёт/Ext/ObjectModule.bsl'],
+  });
+  check('файл вне корней заявлен not_verified, а не «clean»',
+    erfEv.some((l) => l.includes('not_in_analyzer_report')), erfEv.join(' | ').slice(0, 200));
+}
+
+// ---------------------------------------------------------------------------
+section('Версия плагина в выводе инструментов');
+
+// В кэше плагинов живут все установленные версии. Субагент, отработавший инструментами
+// устаревшей, честно доложил «query-lint не существует» — и это было неотличимо от прогона
+// актуальной версией, пока инструменты не печатали, кто они.
+{
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
+  const f = writeBytes('ver-probe.bsl', BOM + 'Процедура В()\nКонецПроцедуры\n');
+  const q = run('tools/query-lint.mjs', [f]);
+  check('query-lint печатает версию плагина', q.out.includes(`[1c-quality-gate v${manifest.version}]`), q.out.trim().slice(0, 160));
+  const g = run('tools/gate.mjs', ['status'], { env: { CLAUDE_PROJECT_DIR: join(WORK, 'нет-такого') } });
+  check('gate status печатает версию плагина', g.out.includes(`1c-quality-gate v${manifest.version}`), g.out.trim().slice(0, 120));
 }
 
 // ---------------------------------------------------------------------------

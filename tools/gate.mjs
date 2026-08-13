@@ -12,10 +12,11 @@
  *   node gate.mjs release --class C0 --reason "<...>"  # снять как не требующий проверки
  */
 
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { validate } from './evidence-validator.mjs';
 import { resolveProjectRoot } from './project-root.mjs';
+import { readConfig, versionSuffix, pluginVersion } from './config.mjs';
 
 const STATE_DIR = ['.claude', '.state'];
 const PENDING = 'qg-pending.json';
@@ -88,6 +89,9 @@ function parseArgs(args) {
 }
 
 function cmdStatus() {
+  // Версия печатается первой строкой: прогон устаревшей версией из кэша плагинов иначе
+  // неотличим от прогона актуальной — вплоть до «таких проверок не существует».
+  process.stdout.write(`1c-quality-gate v${pluginVersion() || '?'}\n`);
   const state = readPending();
   if (!state) {
     process.stdout.write('Гейт не взведён: изменений в файлах 1С не зафиксировано.\n');
@@ -122,6 +126,59 @@ function cmdStatus() {
   }
   process.stdout.write('Снять: node gate.mjs release --evidence <файл отчёта> [--session <id>]\n');
   return 0;
+}
+
+/** Самый свежий файл дерева: mtime и путь — путь нужен, чтобы находка называла виновника. */
+function newestFile(path) {
+  const st = statSync(path);
+  if (!st.isDirectory()) return { time: st.mtimeMs, file: path };
+  let best = { time: 0, file: null };
+  for (const entry of readdirSync(path)) {
+    const sub = newestFile(join(path, entry));
+    if (sub.time > best.time) best = sub;
+  }
+  return best;
+}
+
+/**
+ * Артефакты старше своих исходников — по парам из секции `artifacts` настройки проекта.
+ *
+ * Сценарий, ради которого проверка существует: дефект исправлен в исходниках в 00:09,
+ * пользователь в 00:10 запустил сборку от 00:06 и получил ошибку, которой в исходниках уже
+ * нет. Формально гейт чист, практически — потерянный прогон.
+ *
+ * Только предупреждение: mtime — приближение (checkout и копирование его меняют), а пары
+ * называет проект, не плагин. Пустая секция — проверки нет, и это сказано нигде не будет:
+ * молчание здесь законно, потому что пар не существует.
+ */
+function staleArtifacts(rootDir) {
+  let pairs;
+  try {
+    pairs = readConfig(rootDir)?.artifacts?.pairs;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(pairs)) return [];
+
+  const out = [];
+  for (const pair of pairs) {
+    if (!pair || typeof pair !== 'object') continue;
+    if (typeof pair.source !== 'string' || typeof pair.artifact !== 'string') continue;
+    const src = join(rootDir, pair.source);
+    const art = join(rootDir, pair.artifact);
+    // Отсутствующий артефакт — не находка: его ещё не собирали, сравнивать нечего.
+    if (!existsSync(src) || !existsSync(art)) continue;
+    try {
+      const artTime = statSync(art).mtimeMs;
+      const newest = newestFile(src);
+      if (newest.file && newest.time > artTime) {
+        out.push({ artifact: pair.artifact, source: pair.source, newestFile: newest.file });
+      }
+    } catch {
+      /* гонка с удалением файла — проверка свежести не важнее снятия гейта */
+    }
+  }
+  return out;
 }
 
 function cmdRelease(args) {
@@ -209,6 +266,10 @@ function cmdRelease(args) {
     return 2;
   }
 
+  // Свежесть артефактов проверяется на ЛЮБОМ пути снятия, включая C0/C1 без следа:
+  // исправление комментария тоже попадает в сборку, только если она была после правки.
+  const stale = staleArtifacts(root());
+
   mkdirSync(dir, { recursive: true });
 
   // Снимаем ТОЛЬКО свою сессию: записи остальных остаются взведёнными, за них отвечают
@@ -237,7 +298,13 @@ function cmdRelease(args) {
     evidenceFile: evidenceFile || null,
     class: cls || null,
     reason: reason || null,
-    warnings: warnings.map((w) => ({ line: w.line || null, message: w.message })),
+    warnings: [
+      ...warnings.map((w) => ({ line: w.line || null, message: w.message })),
+      ...stale.map((s) => ({
+        line: null,
+        message: `артефакт ${s.artifact} старше исходника ${s.newestFile}: правки не попали в сборку`,
+      })),
+    ],
   };
   writeFileSync(done, JSON.stringify(doneState, null, 2), 'utf8');
 
@@ -250,10 +317,20 @@ function cmdRelease(args) {
     }
     process.stdout.write('\n');
   }
+  if (stale.length) {
+    process.stdout.write('Артефакты старше своих исходников — последние правки НЕ попали в сборку:\n');
+    for (const s of stale) {
+      process.stdout.write(`  ПРЕДУПРЕЖДЕНИЕ ${s.artifact} старше ${s.newestFile} — пересобери перед передачей\n`);
+      process.stdout.write(
+        `  след: [qg not_verified: dimension=artifact-freshness, reason=artifact_older_than_sources, artifact=${s.artifact}]\n`
+      );
+    }
+    process.stdout.write('\n');
+  }
   process.stdout.write(
     (evidenceFile
-      ? `Гейт сессии ${sessionId} снят по следу прогона (${evidenceFile}). Файлов в охвате: ${count}.\n`
-      : `Гейт сессии ${sessionId} снят как ${cls} без прогона. Причина: ${reason}\nФайлов в охвате: ${count}.\n`) +
+      ? `Гейт сессии ${sessionId} снят по следу прогона (${evidenceFile}). Файлов в охвате: ${count}.${versionSuffix()}\n`
+      : `Гейт сессии ${sessionId} снят как ${cls} без прогона. Причина: ${reason}\nФайлов в охвате: ${count}.${versionSuffix()}\n`) +
       (rest ? `Остаются взведёнными гейты других сессий: ${rest}. Их не трогаем.\n` : '')
   );
   return 0;

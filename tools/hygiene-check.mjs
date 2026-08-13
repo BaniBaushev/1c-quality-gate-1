@@ -15,6 +15,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { recordRun } from './run-journal.mjs';
+import { versionSuffix } from './config.mjs';
 
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
@@ -208,7 +209,7 @@ function main(argv) {
       }
       process.stdout.write('\n');
     }
-    process.stdout.write(`Проверено файлов: ${files.length}. Ошибок: ${errors}, предупреждений: ${warns}.\n`);
+    process.stdout.write(`Проверено файлов: ${files.length}. Ошибок: ${errors}, предупреждений: ${warns}.${versionSuffix()}\n`);
     process.stdout.write('\n## quality evidence\n\n' + evidence + '\n');
   }
 

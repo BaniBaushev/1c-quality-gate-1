@@ -604,8 +604,8 @@ node "$QG/tools/analyzer-run.mjs" --changed <файл> [...]   # статиче�
 node "$QG/tools/analyzer-run.mjs" --sentinel               # только проверка живости анализатора
 node "$QG/tools/analyzer-bootstrap.mjs" [--verify]         # установка анализатора и сверка SHA-256
 node "$QG/tools/hygiene-check.mjs" <файл> [...]            # байтовая гигиена
-node "$QG/tools/query-lint.mjs" <файл.bsl> [...]           # тексты запросов: затенение колонки, ПЕРВЫЕ N без порядка
-node "$QG/tools/bsl-lint.mjs" <файл.bsl> [...]             # транзакция внутри обработчика с неявной транзакцией
+node "$QG/tools/query-lint.mjs" <файл.bsl|.xml> [...]      # тексты запросов (включая <query> СКД и динсписки): затенение колонки, ПЕРВЫЕ N без порядка
+node "$QG/tools/bsl-lint.mjs" <файл.bsl> [...]             # транзакция в обработчике; примитив в поле ссылочного типа
 node "$QG/tools/xml/orphan-check.mjs" <каталог выгрузки>   # сверка «диск ↔ состав» в обе стороны
 node "$QG/tools/xml/uuid-unique.mjs" <каталог выгрузки>    # дубли UUID объектов метаданных
 python "$QG/tools/xml/meta-validate.py" -Path "<путь>"     # валидаторы XML; -Path принимают все

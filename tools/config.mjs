@@ -19,9 +19,33 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolveProjectRoot } from './project-root.mjs';
 
 export const CONFIG_FILE = '.1c-quality-gate.json';
+
+/**
+ * Версия плагина из манифеста — для печати в выводе инструментов.
+ *
+ * Зачем: в кэше плагинов живут ВСЕ установленные версии, и сессия с неверно разрешённым
+ * путём работает инструментами устаревшей — в живом прогоне субагент из 0.10.0 честно
+ * объявил несуществующими проверки, которые давно есть. Пока версия не печатается, такой
+ * прогон неотличим от прогона актуальной версией.
+ */
+export function pluginVersion() {
+  try {
+    const manifest = join(dirname(fileURLToPath(import.meta.url)), '..', '.claude-plugin', 'plugin.json');
+    return JSON.parse(readFileSync(manifest, 'utf8')).version || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Суффикс с версией для итоговых строк инструментов. Пустой, если манифест не читается. */
+export function versionSuffix() {
+  const v = pluginVersion();
+  return v ? ` [1c-quality-gate v${v}]` : '';
+}
 
 const STATE_DIR = ['.claude', '.state'];
 const INIT_MARKER = 'qg-config-init.json';
@@ -47,6 +71,9 @@ export const DEFAULTS = {
   complexity: { maxNesting: 4, maxMethodLines: 120, maxParams: 7 },
   archetypes: { custom: [] },
   sentinel: { id: 'std454' },
+  // Пары «исходники → собранный артефакт» для проверки свежести при снятии гейта.
+  // Плагин раскладку репозитория не угадывает — пары называет проект.
+  artifacts: { pairs: [] },
 };
 
 /**
@@ -232,6 +259,13 @@ export function template() {
             'id: номер заведомо существующего стандарта, которым проверяется живость MCP v8std ' +
             '(умолчание std454). Закрепите свой, если номер когда-нибудь исчезнет: неудачу запроса ' +
             'нельзя отличить от исчезновения страницы.',
+        },
+        artifacts: {
+          '//':
+            'pairs: пары «исходники → артефакт» для проверки свежести при снятии гейта. Каждая — ' +
+            '{ "source": "src/xml/Обработка", "artifact": "build/Обработка.epf" }; пути от корня ' +
+            'проекта, source — файл или каталог. Артефакт старше любого исходника из своего дерева ' +
+            'даёт предупреждение (не блок): исправленный в исходниках дефект не попал в сборку.',
         },
       },
       null,

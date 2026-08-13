@@ -20,7 +20,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolve as resolveConfig, evidenceValue } from './config.mjs';
-import { SCOPES, TOOL_BACKED, RENAMED, isKnownScope } from './evidence-scopes.mjs';
+import { SCOPES, TOOL_BACKED, RENAMED, isKnownScope, isKnownQgId } from './evidence-scopes.mjs';
 import { readJournal, coveredFiles } from './run-journal.mjs';
 import { projectRoot } from './project-root.mjs';
 
@@ -37,12 +37,14 @@ const VOLUMES = ['C0', 'C1', 'C2', 'C3'];
  * ни сборка бинарника. Ошибка вроде «Неоднозначное поле» доживает до первого выполнения.
  * `static-analysis` и `cross-config-resolution` печатает `analyzer-run.mjs`, когда файл не
  * разобран или основной конфигурации нет.
+ * `artifact-freshness` печатает `gate.mjs release`, когда собранный артефакт старше своих
+ * исходников (по парам из секции `artifacts` настройки проекта).
  *
  * Список закрытый: опечатка в имени измерения оставила бы запись, которая выглядит
  * заполненной, но ничего не закрывает. Пополнять его нужно вместе с инструментом, который
  * новое имя печатает, — иначе валидатор ругается на собственный вывод плагина.
  */
-const DIMENSIONS = ['compilation', 'query-execution', 'static-analysis', 'cross-config-resolution'];
+const DIMENSIONS = ['compilation', 'query-execution', 'static-analysis', 'cross-config-resolution', 'artifact-freshness'];
 
 /**
  * Метки архетипов из таблицы `quality-gate/SKILL.md`.
@@ -84,16 +86,17 @@ const REQUIRED = {
 // `bslls:*` — законный идентификатор «весь набор правил анализатора»: перечислять полторы
 // сотни проверенных кодов в чистом прогоне бессмысленно, а формат уже использует эту форму
 // в поле `planned` записи skipped.
-// Идентификатор нашей эвристики — из двух и БОЛЕЕ сегментов: `qg:ARCH-A1`, но и
-// `qg:AI-CONTRACT-RECHECK`. Прежний шаблон допускал ровно два сегмента и ругался на
-// составные имена, которые сам же плагин и порождает.
-const ID_PATTERN = /^(std\d{3,4}|bslls:(\*|[A-Za-z][\w-]*)|acc:\d{3,4}|v8cs:[\w-]+|qg:[A-Z][A-Z0-9]*(-[A-Z0-9]+)+|patterns:[\w:-]+)$/;
+// Пространство `qg:` проверяется не формой, а реестром (`QG_IDS` в evidence-scopes.mjs):
+// форма пропускала любое правдоподобное имя, и в живой сессии больше половины `qg:*` в
+// отчётах не существовало в плагине. Шаблон ниже — для ЧУЖИХ пространств, у которых
+// собственного реестра здесь нет.
+const ID_PATTERN = /^(std\d{3,4}|bslls:(\*|[A-Za-z][\w-]*)|acc:\d{3,4}|v8cs:[\w-]+|patterns:[\w:-]+)$/;
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // Настройка, применённая к прогону: `default` либо `custom:<секция>[+<секция>]`. Печатает её
 // `tools/config.mjs show`, откуда она и переносится в след. Список секций закрытый: выдуманное
 // имя означает, что строку сочинили, а не скопировали из вывода инструмента.
-const CONFIG_SECTIONS = ['analyzer', 'volume', 'complexity', 'archetypes', 'sentinel'];
+const CONFIG_SECTIONS = ['analyzer', 'volume', 'complexity', 'archetypes', 'sentinel', 'artifacts'];
 const CONFIG_PATTERN = new RegExp(`^(default|custom:(${CONFIG_SECTIONS.join('|')})(\\+(${CONFIG_SECTIONS.join('|')}))*)$`);
 
 /**
@@ -333,7 +336,21 @@ export function validate(text, { gate = false, root = null, session = null } = {
       checkScopeName(rec, add);
       const ids = Array.isArray(rec.fields.ids) ? rec.fields.ids : [];
       for (const id of ids) {
-        if (!ID_PATTERN.test(id)) add('warn', rec.line, `идентификатор "${id}" непохож на stdNNN / bslls:X / acc:NNN / qg:X`);
+        // Свои признаки — только из реестра, и это ошибка, а не предупреждение: вымышленный
+        // `qg:*` делает отчёт строже настоящего, ничем при этом не проверив. Чужие
+        // пространства (std, bslls, acc, v8cs) проверяются формой — их реестры не наши.
+        if (id.startsWith('qg:')) {
+          if (!isKnownQgId(id)) {
+            add(
+              'error',
+              rec.line,
+              `идентификатор "${id}" не из реестра признаков (tools/evidence-scopes.mjs): ` +
+                'такого признака у плагина нет — запись выглядит проверкой, но не соответствует ни одной'
+            );
+          }
+        } else if (!ID_PATTERN.test(id)) {
+          add('warn', rec.line, `идентификатор "${id}" непохож на stdNNN / bslls:X / acc:NNN / v8cs:X`);
+        }
       }
     }
     if (rec.type === 'sentinel' && rec.fields.status && !['found', 'not_found'].includes(rec.fields.status)) {
@@ -520,14 +537,19 @@ export function validate(text, { gate = false, root = null, session = null } = {
   const fresh = journal.filter((r) => !since || String(r.ts || '') >= since);
   const runScopes = new Set(fresh.map((r) => r.scope));
 
-  // `skipped` с причиной `not_applicable` — тоже утверждение о работе инструмента: кто-то
-  // посмотрел файлы и заключил, что правило к ним не относится. Инструменты такую отметку
-  // ставят; без требования она была бы дырой ровно того же вида, что и вердикт без прогона,
-  // только шире — ею закрывается любая проверка. Прочие причины (инструмент недоступен,
-  // контур не установлен) отметки не требуют: писать её некому.
+  // `skipped` с причиной `not_applicable` или `no_queries_found` — тоже утверждение о
+  // работе инструмента: кто-то посмотрел файлы и заключил, что правило к ним не относится
+  // (или что запросов в них нет). Инструменты такую отметку ставят; без требования она была
+  // бы дырой ровно того же вида, что и вердикт без прогона, только шире — ею закрывается
+  // любая проверка. Прочие причины (инструмент недоступен, контур не установлен) отметки не
+  // требуют: писать её некому.
   const claimsRun = [
     ...applied,
-    ...records.filter((r) => r.type === 'skipped' && String(r.fields.reason || '') === 'not_applicable'),
+    ...records.filter(
+      (r) =>
+        r.type === 'skipped' &&
+        ['not_applicable', 'no_queries_found', 'no_metadata_resolved'].includes(String(r.fields.reason || ''))
+    ),
   ];
 
   for (const rec of claimsRun) {

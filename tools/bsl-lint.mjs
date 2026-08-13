@@ -2,8 +2,13 @@
 /**
  * Лексические проверки кода BSL — то, что видно по тексту модуля и его пути.
  *
- * Сейчас проверка одна — `qg:BSL-TXN-IN-HANDLER`: собственная транзакция внутри обработчика
- * события объекта, который платформа и так выполняет в транзакции.
+ * Проверки две:
+ *   - `qg:BSL-TXN-IN-HANDLER` — собственная транзакция внутри обработчика события объекта,
+ *     который платформа и так выполняет в транзакции;
+ *   - `qg:BSL-ENUM-STRING-ASSIGN` — присваивание примитива ("", 0, Ложь, Истина) полю,
+ *     которое по XML объекта метаданных имеет строго ссылочный тип (EnumRef, CatalogRef…).
+ *     Сборка на такое молчит — тела модулей не компилируются, — а падение приходит при
+ *     записи, часто в редко исполняемой ветке. Пустое значение ссылки — `ПустаяСсылка()`.
  *
  * Зачем отдельный инструмент, а не правило в своде. Правило «не открывай транзакцию в
  * обработчике» формулируется одной строкой и ровно поэтому его легко не применить: проверка
@@ -19,6 +24,11 @@
  *     файл и графа вызовов не строит;
  *   - модуль определяется по имени файла (`ObjectModule.bsl`, `RecordSetModule.bsl`);
  *     переименованный или собранный на лету модуль в проверку не попадёт;
+ *   - для присваиваний приёмник НЕ разрешается: `Запись.Статус = ""` даёт находку и тогда,
+ *     когда «Запись» — структура со строковым полем того же имени. Поэтому находка —
+ *     предупреждение, а не ошибка, и это сказано в её тексте;
+ *   - XML объекта ищется вверх от модуля (`<Вид>/<Имя>/Ext/*.bsl` → `<Вид>/<Имя>.xml`);
+ *     модуль вне выгрузки метаданных проверяется только на транзакции;
  *   - имена обработчиков только русские: английские идентификаторы платформа понимает, но в
  *     прикладном коде они не встречаются.
  *
@@ -29,8 +39,9 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { recordRun } from './run-journal.mjs';
+import { versionSuffix } from './config.mjs';
 
 /** Символы идентификатора 1С: кириллица делает `\b` в JS бесполезной. */
 const W = 'A-Za-zА-Яа-яЁё0-9_';
@@ -170,31 +181,157 @@ export function lintSource(source, fileName) {
   return findings;
 }
 
-function checkFile(path) {
-  if (!existsSync(path)) {
-    return [{ severity: 'error', rule: 'file-missing', line: 0, message: 'файл не найден' }];
+// ---------------------------------------------------------------------------
+// Присваивание примитива ссылочному полю
+
+/**
+ * Ссылочные типы конфигурации и менеджеры, дающие `ПустаяСсылка()` для каждого.
+ */
+const REF_MANAGERS = {
+  EnumRef: 'Перечисления',
+  CatalogRef: 'Справочники',
+  DocumentRef: 'Документы',
+  ChartOfCharacteristicTypesRef: 'ПланыВидовХарактеристик',
+  ChartOfAccountsRef: 'ПланыСчетов',
+  ChartOfCalculationTypesRef: 'ПланыВидовРасчета',
+  BusinessProcessRef: 'БизнесПроцессы',
+  TaskRef: 'Задачи',
+  ExchangePlanRef: 'ПланыОбмена',
+};
+const REF_TYPE_RE = new RegExp(`cfg:(${Object.keys(REF_MANAGERS).join('|')})\\.([\\w\\u0400-\\u04FF]+)`, 'u');
+
+/**
+ * XML объекта метаданных для модуля: ближайший предок каталога, рядом с которым лежит
+ * одноимённый .xml. Для `Documents/Заказ/Ext/ObjectModule.bsl` это `Documents/Заказ.xml`.
+ */
+export function findObjectXml(bslPath) {
+  let dir = dirname(bslPath);
+  for (let depth = 0; depth < 6 && dir && dir !== dirname(dir); depth++) {
+    const candidate = `${dir}.xml`;
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
   }
-  return lintSource(readFileSync(path, 'utf8').replace(/^﻿/, ''), basename(path));
+  return null;
 }
 
-function evidenceBlock(findings, modulesSeen, files = []) {
-  const hit = modulesSeen && findings.some((f) => f.rule === 'qg:BSL-TXN-IN-HANDLER');
+/**
+ * Поля СТРОГО ссылочного типа из XML объекта: имя → тип.
+ *
+ * Составные типы пропускаются намеренно: у поля «Строка или Ссылка» присваивание "" законно,
+ * а ложная находка дороже пропущенной.
+ */
+export function refTypedFields(xml) {
+  const out = new Map();
+  const blockRe = /<(Attribute|Resource|Dimension|AddressingAttribute)[\s>][\s\S]*?<\/\1>/g;
+  let b;
+  while ((b = blockRe.exec(xml)) !== null) {
+    const name = b[0].match(/<Name>([\wЀ-ӿ]+)<\/Name>/u);
+    const typeBlock = b[0].match(/<Type>([\s\S]*?)<\/Type>/);
+    if (!name || !typeBlock) continue;
+    const types = [...typeBlock[1].matchAll(/<v8:Type>([^<]+)<\/v8:Type>/g)].map((m) => m[1].trim());
+    if (types.length !== 1) continue;
+    if (!REF_TYPE_RE.test(types[0])) continue;
+    out.set(name[1], types[0]);
+  }
+  return out;
+}
+
+/**
+ * Присваивания вида `<Приёмник>.<Поле> = ""` (и 0, Ложь, Истина) для ссылочных полей.
+ *
+ * Присваивание отличается от сравнения по позиции: оператор начинает строку. Сравнение
+ * `Если Запись.Статус = "" Тогда` стоит после «Если» и находкой не является — оно всегда
+ * ложно, но не роняет запись, и это другой класс.
+ */
+export function lintRefAssignments(source, fields) {
+  if (!fields || fields.size === 0) return [];
+  const masked = maskModule(source);
+  const findings = [];
+
+  for (const [name, type] of fields) {
+    const re = new RegExp(`(?<![${W}.])(${IDENT})\\s*\\.\\s*${name}\\s*=(?!=)`, 'giu');
+    let m;
+    while ((m = re.exec(masked)) !== null) {
+      const lineStart = masked.lastIndexOf('\n', m.index) + 1;
+      if (masked.slice(lineStart, m.index).trim() !== '') continue;
+
+      // Правая часть читается из ИСХОДНИКА: маска гасит содержимое литералов вместе с
+      // кавычками, и `""` в ней уже не виден.
+      const rhs = source.slice(m.index + m[0].length, m.index + m[0].length + 40).match(/^[ \t]*(""|0|Ложь|Истина)[ \t]*;/iu);
+      if (!rhs) continue;
+
+      const refMatch = type.match(REF_TYPE_RE);
+      const empty = refMatch ? `${REF_MANAGERS[refMatch[1]]}.${refMatch[2]}.ПустаяСсылка()` : 'ПустаяСсылка()';
+      findings.push({
+        severity: 'warn',
+        rule: 'qg:BSL-ENUM-STRING-ASSIGN',
+        line: lineAt(source, m.index),
+        field: name,
+        type,
+        message:
+          `«${m[1]}.${name} = ${rhs[1]}»: поле «${name}» по XML объекта имеет строго ссылочный тип ` +
+          `${type} — примитив вместо ссылки молчит на сборке и падает при записи. Пустое значение: ` +
+          `${empty}. Приёмник не разрешается: если «${m[1]}» — не объект с этим реквизитом, находка ложная`,
+      });
+    }
+  }
+  return findings;
+}
+
+function checkFile(path) {
+  if (!existsSync(path)) {
+    return { findings: [{ severity: 'error', rule: 'file-missing', line: 0, message: 'файл не найден' }], metaResolved: false };
+  }
+  const source = readFileSync(path, 'utf8').replace(/^﻿/, '');
+  const findings = lintSource(source, basename(path));
+  const objectXml = findObjectXml(path);
+  let metaResolved = false;
+  if (objectXml) {
+    metaResolved = true;
+    const fields = refTypedFields(readFileSync(objectXml, 'utf8').replace(/^﻿/, ''));
+    findings.push(...lintRefAssignments(source, fields));
+  }
+  return { findings, metaResolved };
+}
+
+function evidenceBlock(findings, modulesSeen, metaResolved, files = []) {
+  const lines = [];
+
+  const hitTxn = modulesSeen && findings.some((f) => f.rule === 'qg:BSL-TXN-IN-HANDLER');
   // Отмечается любой исход. Проверка применима лишь к модулям объекта и набора записей, но
   // «инструмент посмотрел файлы и не нашёл среди них таких» — это работа, а не её отсутствие;
   // без отметки такой `not_applicable` неотличим от строки, написанной вместо запуска.
   recordRun({
     scope: 'transaction-nesting',
     tool: 'tools/bsl-lint.mjs',
-    verdict: !modulesSeen ? 'not_applicable' : hit ? 'violation' : 'clean',
+    verdict: !modulesSeen ? 'not_applicable' : hitTxn ? 'violation' : 'clean',
     files,
   });
-  if (!modulesSeen) {
-    return '[qg skipped: layer=code, scope=transaction-nesting, reason=not_applicable]';
-  }
-  return (
-    '[qg applied: layer=code, scope=transaction-nesting, ids=[qg:BSL-TXN-IN-HANDLER], ' +
-    `verdict=${hit ? 'violation:qg:BSL-TXN-IN-HANDLER' : 'clean'}]`
+  lines.push(
+    !modulesSeen
+      ? '[qg skipped: layer=code, scope=transaction-nesting, reason=not_applicable]'
+      : '[qg applied: layer=code, scope=transaction-nesting, ids=[qg:BSL-TXN-IN-HANDLER], ' +
+        `verdict=${hitTxn ? 'violation:qg:BSL-TXN-IN-HANDLER' : 'clean'}]`
   );
+
+  // Своя запись на каждое правило: вердикт по транзакциям ничего не говорит о ссылочных
+  // присваиваниях. Модуль вне выгрузки метаданных (XML объекта не найден) даёт пропуск с
+  // причиной: «не смог проверить» и «проверил, чисто» — разные утверждения.
+  const hitRef = metaResolved && findings.some((f) => f.rule === 'qg:BSL-ENUM-STRING-ASSIGN');
+  recordRun({
+    scope: 'enum-string-assign',
+    tool: 'tools/bsl-lint.mjs',
+    verdict: !metaResolved ? 'no_metadata_resolved' : hitRef ? 'violation' : 'clean',
+    files,
+  });
+  lines.push(
+    !metaResolved
+      ? '[qg skipped: layer=code, scope=enum-string-assign, reason=no_metadata_resolved]'
+      : '[qg applied: layer=code, scope=enum-string-assign, ids=[qg:BSL-ENUM-STRING-ASSIGN], ' +
+        `verdict=${hitRef ? 'violation:qg:BSL-ENUM-STRING-ASSIGN' : 'clean'}]`
+  );
+
+  return lines.join('\n');
 }
 
 function main(argv) {
@@ -207,7 +344,7 @@ function main(argv) {
     return 2;
   }
 
-  const report = files.map((f) => ({ file: f, findings: checkFile(f) }));
+  const report = files.map((f) => ({ file: f, ...checkFile(f) }));
   const findings = report.flatMap((r) => r.findings);
   const errors = findings.filter((f) => f.severity === 'error').length;
   const warns = findings.filter((f) => f.severity === 'warn').length;
@@ -216,7 +353,8 @@ function main(argv) {
   // неявной транзакции не имеют. Если таких файлов не было вовсе — это `not_applicable`,
   // а не «чисто»: молчание об области применения читается как проведённая проверка.
   const modulesSeen = files.some((f) => IMPLICIT_TRANSACTION_MODULES.has(basename(f)));
-  const evidence = evidenceBlock(findings, modulesSeen, files);
+  const metaResolved = report.some((r) => r.metaResolved);
+  const evidence = evidenceBlock(findings, modulesSeen, metaResolved, files);
 
   if (asJson) {
     process.stdout.write(JSON.stringify({ files: report, errors, warns, evidence }, null, 2) + '\n');
@@ -235,7 +373,7 @@ function main(argv) {
   process.stdout.write(
     `Проверено файлов: ${files.length}, из них модулей с неявной транзакцией: ` +
       `${files.filter((f) => IMPLICIT_TRANSACTION_MODULES.has(basename(f))).length}. ` +
-      `Ошибок: ${errors}, предупреждений: ${warns}.\n`
+      `Ошибок: ${errors}, предупреждений: ${warns}.${versionSuffix()}\n`
   );
   process.stdout.write('\n## quality evidence\n\n' + evidence + '\n');
 

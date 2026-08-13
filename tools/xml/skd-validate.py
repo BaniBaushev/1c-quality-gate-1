@@ -4,6 +4,7 @@
 # Адаптировано для плагина 1c-quality-gate; изменения (c) 2026 romandredan, MIT.
 import argparse
 import os
+import re
 import sys
 
 from lxml import etree
@@ -537,6 +538,84 @@ if stopped:
     finalize()
     sys.exit(1)
 
+# ── 11a. Parameter ↔ virtual table auto-fill collision ───────
+# СКД автозаполняет параметры виртуальных таблиц одноимёнными параметрами схемы, когда
+# слоты ВТ в тексте запроса не заняты явно. Слот периода ожидает Дату; параметр схемы с
+# тем же именем и типом StandardPeriod уезжает в слот целиком, и формирование падает с
+# «Несоответствие типов (Параметр номер 1)». Коварство: правка не касается запроса —
+# добавили параметр отчёта, сломалась виртуальная таблица.
+#
+# Контр-сигналы, на которых проверка молчит: параметр типа Дата (законная автоподстановка);
+# слоты, занятые явно — даже пустые `СрезПоследних(, )` отключают автозаполнение.
+# Сообщения по-русски: проверка своя, а не из апстрим-порта, и её находка должна
+# читаться вместе с ошибкой платформы.
+
+# Имя ВТ → параметры-слоты периода, которые автозаполняются по совпадению имени.
+VT_PERIOD_SLOTS = {
+    "СрезПоследних": ("Период",),
+    "СрезПервых": ("Период",),
+    "Остатки": ("Период",),
+    "Обороты": ("НачалоПериода", "КонецПериода"),
+    "ОстаткиИОбороты": ("НачалоПериода", "КонецПериода"),
+    "ДвиженияССубконто": ("НачалоПериода", "КонецПериода"),
+    "ОборотыДтКт": ("НачалоПериода", "КонецПериода"),
+}
+
+# Периодические ВТ бывают только у регистров: требование префикса «Регистр*.Имя.» отсекает
+# одноимённые реквизиты («Заказ.Обороты») — ложная находка дороже пропущенной.
+VT_OPEN_RE = re.compile(
+    r"\bРегистр\w+\.\w+\.(" + "|".join(VT_PERIOD_SLOTS) + r")\b\s*(\()?"
+)
+
+
+def schema_param_types():
+    types = {}
+    for p in param_nodes:
+        n = find(p, "s:name")
+        if n is None or not inner_text(n):
+            continue
+        tokens = set()
+        for t in find_all(p, "s:valueType/v8:Type"):
+            tokens.add((t.text or "").strip().split(":")[-1])
+        types[inner_text(n)] = tokens
+    return types
+
+
+if len(param_nodes) > 0 and len(data_set_nodes) > 0:
+    p_types = schema_param_types()
+    collisions_seen = {}
+    for ds in data_set_nodes:
+        if ds.get(XSI_TYPE, "") != "DataSetQuery":
+            continue
+        q_text = inner_text(find(ds, "s:query"))
+        if not q_text:
+            continue
+        name_node = find(ds, "s:name")
+        ds_name = inner_text(name_node) if name_node is not None else "(unnamed)"
+        for m in VT_OPEN_RE.finditer(q_text):
+            if m.group(2):  # скобки есть — слоты заняты явно, автозаполнения нет
+                continue
+            vt_name = m.group(1)
+            for slot in VT_PERIOD_SLOTS[vt_name]:
+                if "StandardPeriod" not in p_types.get(slot, set()):
+                    continue
+                key = (ds_name, vt_name, slot)
+                if key in collisions_seen:
+                    continue
+                collisions_seen[key] = True
+                report_error(
+                    f"[qg:SKD-PARAM-VT-COLLISION] DataSet '{ds_name}': параметр схемы «{slot}» "
+                    f"типа StandardPeriod автоподставится в {vt_name} — слот периода ожидает Дату, "
+                    f"формирование упадёт с «Несоответствие типов». Переименуйте параметр отчёта "
+                    f"или займите слоты явно: {vt_name}(, )"
+                )
+    if not collisions_seen:
+        report_ok("Parameters do not collide with virtual table auto-fill")
+
+if stopped:
+    finalize()
+    sys.exit(1)
+
 # ── 12. Template checks ──────────────────────────────────────
 
 if len(template_nodes) > 0:
@@ -652,6 +731,90 @@ def check_structure_item(item_node, variant_name):
             report_warn(f"Variant '{variant_name}': table has no rows")
 
 
+# ── Group selection checks (semantic) ────────────────────────
+# В строке группировки СКД выводятся только её собственные поля, поля вышестоящих
+# группировок, их реквизиты и ресурсы. Вычисляемое поле без агрегатной функции там не
+# «выводится пустым» — платформа отказывается формировать отчёт целиком: «Поле … не может
+# быть использовано в группировке». Зеркальный случай — группировка вовсе без выбранных
+# полей: запрос выполняется, но отчёт молча пуст.
+#
+# Контр-сигналы, на которых проверка молчит: элемент Авто в выборке (состав полей решает
+# компоновщик), «детальные записи» (группировка без полей — законно любое поле), реквизиты
+# полей группировки (Товар.Артикул при группировке по Товар), поля родительских группировок.
+# Таблицы и диаграммы не проверяются: у их группировок своя механика вывода.
+
+# Ресурсы схемы: поля, законные в выборке любой группировки.
+resource_paths = set()
+for tf in total_field_nodes:
+    tf_dp = find(tf, "s:dataPath")
+    if tf_dp is not None and inner_text(tf_dp):
+        resource_paths.add(inner_text(tf_dp))
+
+
+def collect_selection(items, fields, flags):
+    """Поля выборки и признак Авто; папки колонок раскрываются рекурсивно."""
+    for si in items:
+        t = si.get(XSI_TYPE, "")
+        if t == "dcsset:SelectedItemAuto":
+            flags["auto"] = True
+        elif t == "dcsset:SelectedItemField":
+            f = inner_text(find(si, "dcsset:field"))
+            if f:
+                fields.append(f)
+        elif t == "dcsset:SelectedItemFolder":
+            collect_selection(find_all(si, "dcsset:item"), fields, flags)
+
+
+def group_selection_checks(item_node, variant_name, inherited):
+    """Обход дерева структуры с накоплением полей группировок по иерархии.
+
+    Накопление обязательно: поле родительской группировки законно в дочерней, и локальная
+    проверка одного узла давала бы ложную находку на каждом таком поле.
+    """
+    if stopped:
+        return
+    if item_node.get(XSI_TYPE, "") != "dcsset:StructureItemGroup":
+        return
+
+    own = []
+    for gi in find_all(item_node, "dcsset:groupItems/dcsset:item"):
+        if gi.get(XSI_TYPE, "") == "dcsset:GroupItemField":
+            f = inner_text(find(gi, "dcsset:field"))
+            if f:
+                own.append(f)
+    accumulated = inherited | set(own)
+
+    fields = []
+    flags = {"auto": False}
+    collect_selection(find_all(item_node, "dcsset:selection/dcsset:item"), fields, flags)
+
+    nested = find_all(item_node, "dcsset:item")
+    label = ", ".join(own) if own else "детальные записи"
+
+    if not fields and not flags["auto"] and len(nested) == 0:
+        report_warn(
+            f"[qg:SKD-GROUP-EMPTY-SELECTION] Variant '{variant_name}': группировка ({label}) "
+            f"без выбранных полей и без Авто — запрос выполнится, но отчёт не выведет ни строки"
+        )
+
+    if own and fields and not flags["auto"]:
+        for f in fields:
+            if f in accumulated or f in resource_paths:
+                continue
+            if any(f.startswith(g + ".") for g in accumulated):
+                continue
+            if f.startswith("SystemFields.") or f.startswith("DataParameters."):
+                continue
+            report_error(
+                f"[qg:SKD-GROUP-NONAGGREGATE-FIELD] Variant '{variant_name}': поле «{f}» в выборке "
+                f"группировки ({', '.join(own)}) — не поле группировки, не реквизит её полей и не "
+                f"ресурс; платформа откажется формировать отчёт"
+            )
+
+    for ni in nested:
+        group_selection_checks(ni, variant_name, accumulated)
+
+
 def check_settings(settings_node, variant_name):
     global stopped
     if stopped:
@@ -684,6 +847,7 @@ def check_settings(settings_node, variant_name):
     struct_items = find_all(settings_node, "dcsset:item")
     for si in struct_items:
         check_structure_item(si, variant_name)
+        group_selection_checks(si, variant_name, set())
 
 
 # ── 15. SettingsVariant checks ────────────────────────────────

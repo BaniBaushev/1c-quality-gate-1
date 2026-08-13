@@ -75,6 +75,14 @@
 `stdNNN`, `bslls:<Код>`, `acc:NNN`, `v8cs:<код>`, `qg:<ЭВРИСТИКА>`, `patterns:<путь>`.
 `verdict` — `clean` либо `violation:<id>`.
 
+**Пространство `qg:` — тоже закрытый список**, реестр `QG_IDS` в том же
+`tools/evidence-scopes.mjs`. Пока идентификатор проверялся только по форме, проходило любое
+правдоподобное имя: в живой сессии больше половины `qg:*` в отчётах не существовало в плагине
+(`qg:XML-VALID` вместо `qg:XML-STRUCT`, выдуманный `qg:SKD-VALID`), и отчёт с вымышленными
+признаками выглядел строже настоящего. Неизвестный `qg:*` — ошибка, а не предупреждение.
+Чужие пространства (`std`, `bslls`, `acc`, `v8cs`) по-прежнему проверяются формой: их реестры
+не наши.
+
 **Почему словарь закрытый.** Пока проверялся только формат имени, проходило любое похожее
 слово — и этим пользовалась не злая воля, а документация: одну проверку называли
 `static-diagnostics`, `lsp-diagnostics` и `static-analysis` в трёх разных местах. Запись со
@@ -108,8 +116,10 @@
 
 **`skipped` с причиной `not_applicable` тоже требует отметки.** Это утверждение о работе
 инструмента — «посмотрел файлы, правило к ним не относится», — и без требования оно было бы
-дырой шире исходной: такой записью закрывается любая проверка. Инструменты ставят отметку и
-на этом исходе. Прочие причины (`analyzer_unavailable`, `contour_not_installed`) отметки не
+дырой шире исходной: такой записью закрывается любая проверка. То же относится к
+`no_queries_found` (query-lint смотрел файлы и запросов не нашёл) и `no_metadata_resolved`
+(bsl-lint не нашёл XML объекта рядом с модулем). Инструменты ставят отметку и на этих
+исходах. Прочие причины (`analyzer_unavailable`, `contour_not_installed`) отметки не
 требуют: ставить её некому.
 
 Чего сверка не делает: она не защищает от записи, дописанной в журнал вручную. В отличие от
@@ -125,9 +135,14 @@
 
 Обязательные поля: `layer`, `reason`.
 
-Типовые причины: `volume_below_threshold`, `not_applicable`, `contour_not_installed`,
-`analyzer_unavailable`, `rlm_unavailable`, `platform_unavailable`, `stale_or_unavailable_index`,
-`verified_earlier`.
+Типовые причины: `volume_below_threshold`, `not_applicable`, `no_queries_found`,
+`no_metadata_resolved`, `contour_not_installed`, `analyzer_unavailable`, `rlm_unavailable`,
+`platform_unavailable`, `stale_or_unavailable_index`, `verified_earlier`.
+
+`no_queries_found` и `not_applicable` — разные утверждения: первое значит «инструмент файлы
+ЧИТАЛ и запросов не нашёл», второе — «правило к файлам этого вида не относится». Файл, чьи
+запросы инструмент не умеет читать, прятался бы за вторым — поэтому query-lint его больше
+не пишет.
 
 ### `not_verified` — измерение непроверяемо доступными средствами
 
@@ -141,8 +156,10 @@
 Отличие от `skipped`: `skipped` — «слой можно было прогнать, но не требовалось или инструмент
 лежал»; `not_verified` — «этого в принципе нельзя проверить тем, что есть».
 
-Измерения: `compilation`, `query-execution`, `static-analysis`, `cross-config-resolution`.
-Две последние записи печатает `analyzer-run.mjs` сам:
+Измерения: `compilation`, `query-execution`, `static-analysis`, `cross-config-resolution`,
+`artifact-freshness`. Последнее печатает `gate.mjs release`, когда собранный артефакт старше
+своих исходников (пары «исходники → артефакт» — секция `artifacts` настройки проекта);
+`static-analysis` и `cross-config-resolution` печатает `analyzer-run.mjs` сам:
 
 ```
 [qg not_verified: dimension=static-analysis, reason=parse_failed, files=3]
