@@ -1745,6 +1745,15 @@ const mustContain = [
   // Обоснования переехали, но обязаны существовать: правило без причины не применяется.
   ['skills/quality-gate/references/profile-axes.md', 'асимметричны', 'разбор асимметрии минимумов по контурам сохранён'],
   ['skills/quality-gate/references/run-environment.md', 'sort -V', 'разбор порядка источников пути к плагину сохранён'],
+  // То же для контура кода: режимы вывода анализатора и методология второго взгляда уехали
+  // в справочники, но их содержимое обязано существовать — иначе правило осталось командой
+  // без причины, а такие не применяют.
+  ['skills/bsl-code-review/SKILL.md', 'Инварианты контура', 'у контура кода выделен минимум, держащий прогон'],
+  ['skills/bsl-code-review/references/analyzer-output.md', 'ИзменениеИКонтроль', 'известный случай неразобранного файла сохранён'],
+  ['skills/bsl-code-review/references/analyzer-output.md', 'subsystemsFilter', 'разделение гейтового и проектного конфигов сохранено'],
+  ['skills/bsl-code-review/references/cold-reader.md', 'независимость', 'условие независимости холодного читателя сохранено'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'BSL-ENUM-STRING-ASSIGN', 'примитив в ссылочном поле разобран в антипаттернах'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'Составные типы', 'у правила о ссылочных полях назван контр-сигнал'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
@@ -1761,9 +1770,7 @@ section('Бюджет навыков и достижимость справоч�
   // ловит рост заранее, а число в нём называет долг вслух.
   const BUDGET = {
     'quality-gate': 28 * 1024,
-    // Долг: 30 КБ при пределе 32. Следующий на дробление по той же границе — исполняемое
-    // остаётся в навыке, обосновывающее уходит в references.
-    'bsl-code-review': 31 * 1024,
+    'bsl-code-review': 25 * 1024,
     'xml-structure-review': 24 * 1024,
     'bsl-architecture-review': 20 * 1024,
     'file-hygiene': 12 * 1024,
