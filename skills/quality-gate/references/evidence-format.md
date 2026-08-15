@@ -298,7 +298,7 @@ node tools/evidence-validator.mjs <файл> --gate   # строгий, для �
 [qg applied: layer=code, scope=static-analysis, ids=[bslls:MissingCodeTryCatchEx], verdict=violation:bslls:MissingCodeTryCatchEx]
 [qg applied: layer=code, scope=query-in-loop, ids=[std436,bslls:QueryInLoop], verdict=clean]
 [qg applied: layer=code, scope=query-alias-shadowing, ids=[qg:QRY-ALIAS-SHADOWS-FIELD], verdict=clean]
-[qg applied: layer=code, scope=attribute-access, ids=[std437], verdict=violation:std437]
+[qg applied: layer=code, scope=attribute-access, ids=[qg:BSL-REF-DOT-ACCESS,std437], verdict=violation:qg:BSL-REF-DOT-ACCESS]
 [qg skipped: layer=arch, reason=volume_below_threshold]
 [qg skipped: layer=xml, reason=not_applicable]
 [qg not_verified: dimension=compilation, reason=no_platform]

@@ -143,6 +143,11 @@ node "$QG/tools/bsl-lint.mjs" <файл.bsl> [<файл.bsl> ...]
 | `qg:BSL-TXN-IN-HANDLER` | 🟠 | своя `НачатьТранзакцию` внутри обработчика, который платформа уже выполняет в транзакции (#std783 п. 1.4) | `references/bsl-anti-patterns.md` п. 8б |
 | `qg:BSL-ENUM-STRING-ASSIGN` | 🟠 | примитив в поле строго ссылочного типа: сборка молчит, падает при записи | `references/bsl-anti-patterns.md` п. 8в |
 | `qg:BSL-UNBOUNDED-STRING-COLUMN` | 🟠 | строковая колонка без квалификатора у таблицы, уходящей в параметр запроса (#std432 п. 3.1) | `references/ai-antipatterns.md`, `qg:AI-16` |
+| `qg:BSL-REF-DOT-ACCESS` | 🔴 | обращение к реквизиту ссылки через точку: объект читается целиком ради одного поля (#std437). Ярус A — имя базы оканчивается на «Ссылка» | `references/bsl-anti-patterns.md` п. 2 |
+
+**`attribute-access` покрыт инструментом лишь частично.** Ярус A опознаёт ссылку по имени, а
+не по типу: `clean` здесь означает «механическая часть чиста» и разбора #std437 глазами не
+отменяет — инструмент задаёт нижнюю границу, а не верхнюю.
 
 **Записи переносятся дословно, своих находок этого класса не добавляй.** Результат
 детерминирован, а строка, составленная по прочтении кода, выглядит в отчёте точно так же —
@@ -189,16 +194,13 @@ node "$QG/tools/bsl-lint.mjs" <файл.bsl> [<файл.bsl> ...]
 раздел «Не проверено». Вызов **один на весь список**: справочник платформы не терпит
 параллельных обращений, а каждый лишний инстанс поднимает свою сессию индекса кода.
 
-Субагента в среде может не быть — тогда прогоняй `api-verification.md` сам. Оправданий это не
-требует, но **результат обязан попасть в след одинаково в обоих случаях**:
+Субагента в среде может не быть — тогда прогоняй `api-verification.md` сам. **Результат
+обязан попасть в след одинаково в обоих случаях** (инвариант 4):
 
 ```
 [qg applied: layer=code, scope=api-verification, ids=[qg:API-SIGNATURE,qg:API-MODULE], verdict=clean]
 [qg skipped: layer=code, scope=api-verification, reason=platform_unavailable]
 ```
-
-Пропустить шаг молча нельзя: отчёт без записи о верификации неотличим от отчёта, где она
-прошла чисто.
 
 > Для класса C1 на этом контур завершается — переходи к отчёту.
 
@@ -280,9 +282,12 @@ node "$QG/tools/bsl-lint.mjs" <файл.bsl> [<файл.bsl> ...]
 
 ```
 [qg applied: layer=code, scope=query-in-loop, ids=[std436,bslls:QueryInLoop], verdict=clean]
-[qg applied: layer=code, scope=attribute-access, ids=[std437], verdict=violation:std437]
+[qg applied: layer=code, scope=attribute-access, ids=[qg:BSL-REF-DOT-ACCESS,std437], verdict=violation:qg:BSL-REF-DOT-ACCESS]
 [qg skipped: layer=code, scope=static-analysis, planned=[bslls:*], reason=analyzer_unavailable]
 ```
+
+Вторая строка — из тех, что печатает инструмент: `attribute-access` стал инструментальным, и
+написанная руками, она валидатор больше не проходит.
 
 Формат — `../quality-gate/references/evidence-format.md`.
 

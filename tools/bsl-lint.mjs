@@ -472,6 +472,104 @@ export function lintUnboundedColumns(source) {
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// Разыменование ссылки через точку
+
+/**
+ * Поля, чтение которых обращения к базе не требует.
+ *
+ * `Ссылка.Ссылка` возвращает саму ссылку — объект не читается. `НомерСтроки` у ссылки не
+ * существует вовсе: встретив его, мы почти наверняка смотрим на строку табличной части, а не
+ * на ссылку, и молчание тут дешевле догадки.
+ */
+const FREE_FIELDS = new Set(['ссылка', 'номерстроки']);
+
+/**
+ * Сегменты, после которых имя на «Ссылка» означает не ссылку.
+ *
+ * `Отбор.Ссылка.Значение` — свойство элемента отбора: имя сегмента совпадает с именем
+ * реквизита по построению, чтения из базы нет. Без этого исключения правило давало бы находку
+ * на каждой установке отбора — самая частая законная форма из всех похожих.
+ */
+const NON_REF_CHAIN = new Set(['отбор', 'отборы', 'элементыотбора', 'параметрыотбора', 'структураотбора']);
+
+/** Менеджеры: `Справочники.Товары.ПустаяСсылка()` ссылкой в этом смысле не является. */
+const MANAGERS = new Set([
+  'справочники', 'документы', 'перечисления', 'планывидовхарактеристик', 'планысчетов',
+  'планывидоврасчета', 'регистрысведений', 'регистрынакопления', 'регистрыбухгалтерии',
+  'регистрырасчета', 'бизнеспроцессы', 'задачи', 'планыобмена', 'метаданные', 'обработки',
+  'отчеты', 'константы', 'последовательности', 'документыссылка', 'справочникиссылка',
+]);
+
+const CHAIN_RE = new RegExp(`(?<![${W}.])(${IDENT})((?:\\s*\\.\\s*${IDENT})+)`, 'giu');
+
+/**
+ * Обращение к реквизиту ссылочного значения через точку.
+ *
+ * Точка у ссылки читает объект ЦЕЛИКОМ — все реквизиты и все табличные части — ради одного
+ * поля. Замена: `ОбщегоНазначения.ЗначениеРеквизитаОбъекта`, для нескольких полей
+ * `ЗначенияРеквизитовОбъекта` одним вызовом. Якорь — #std437, антипаттерн «Чтение реквизита
+ * через точку» (🔴), разбор в `references/bsl-anti-patterns.md` и `qg:AI-02`.
+ *
+ * Почему инструментом. Статический анализатор эту форму не видит в принципе: чтобы понять,
+ * что база цепочки — ссылка, нужен вывод типов через границы методов и модулей, а
+ * синтаксически `Структура.Ключ.Поле` неотличимо от обращения к вложенной структуре. До
+ * этого правила проверка закрывалась только чтением глазами, и её «чисто» ничем не
+ * фальсифицировалось: в живой сессии четыре разыменования пережили два прогона гейта с
+ * рукописной строкой следа.
+ *
+ * ЯРУС A — единственный реализованный: имя базы оканчивается на «Ссылка». Это конвенция
+ * именования, а не вывод типов, поэтому покрытие частичное: инструмент задаёт нижнюю границу
+ * проверки #std437, а не верхнюю. Ссылку, пришедшую параметром без подсказки в имени, он не
+ * распознаёт — и это заявлено в записи следа и в навыке.
+ */
+export function lintRefDotAccess(source) {
+  const masked = maskModule(source);
+  const findings = [];
+
+  CHAIN_RE.lastIndex = 0;
+  let m;
+  while ((m = CHAIN_RE.exec(masked)) !== null) {
+    const raw = m[0];
+    const segments = raw.split('.').map((s) => s.trim());
+    const lower = segments.map((s) => s.toLowerCase());
+    if (MANAGERS.has(lower[0])) continue;
+
+    for (let i = 1; i < segments.length; i++) {
+      const baseSegment = segments[i - 1];
+      const field = segments[i];
+      if (!lower[i - 1].endsWith('ссылка')) continue;
+      if (FREE_FIELDS.has(lower[i])) break;
+      if (lower.slice(0, i).some((s) => NON_REF_CHAIN.has(s))) break;
+
+      // Вызов метода объектом не читает: `Ссылка.ПолучитьОбъект()`, `Ссылка.Пустая()`.
+      // Проверяется только последний сегмент — у промежуточного за именем всегда точка.
+      if (i === segments.length - 1) {
+        const after = masked.slice(m.index + raw.length).match(/^\s*\(/);
+        if (after) break;
+      }
+
+      const base = segments.slice(0, i).join('.');
+      findings.push({
+        severity: 'error',
+        rule: 'qg:BSL-REF-DOT-ACCESS',
+        line: lineAt(source, m.index),
+        base,
+        field,
+        message:
+          `«${base}.${field}»: обращение через точку у ссылочного значения — платформа прочитает объект ` +
+          'целиком, все реквизиты и табличные части, ради одного поля (#std437, антипаттерн «Чтение ' +
+          `реквизита через точку»). Замена: ОбщегоНазначения.ЗначениеРеквизитаОбъекта(${base}, "${field}"), ` +
+          'для нескольких полей — ЗначенияРеквизитовОбъекта одним вызовом. Основание эвристическое — имя ' +
+          `«${baseSegment}» оканчивается на «Ссылка»: если это структура, элемент отбора или уже полученный ` +
+          'объект, находка ложная',
+      });
+      break;
+    }
+  }
+  return findings;
+}
+
 function checkFile(path) {
   if (!existsSync(path)) {
     return { findings: [{ severity: 'error', rule: 'file-missing', line: 0, message: 'файл не найден' }], metaResolved: false };
@@ -479,6 +577,7 @@ function checkFile(path) {
   const source = readFileSync(path, 'utf8').replace(/^﻿/, '');
   const findings = lintSource(source, basename(path));
   findings.push(...lintUnboundedColumns(source));
+  findings.push(...lintRefDotAccess(source));
   const objectXml = findObjectXml(path);
   let metaResolved = false;
   if (objectXml) {
@@ -539,6 +638,23 @@ function evidenceBlock(findings, modulesSeen, metaResolved, files = []) {
   lines.push(
     '[qg applied: layer=code, scope=unbounded-string-column, ids=[qg:BSL-UNBOUNDED-STRING-COLUMN], ' +
       `verdict=${hitCols ? 'violation:qg:BSL-UNBOUNDED-STRING-COLUMN' : 'clean'}]`
+  );
+
+  // `attribute-access` до этого правила был проверкой без инструмента: строку следа писала
+  // модель, и валидатору нечем было отличить прогон от чтения глазами. Теперь строку печатает
+  // инструмент и отмечается в журнале — рукописный «clean» по этому имени больше не проходит.
+  // Покрытие при этом частичное (ярус A, конвенция имён), и вердикт «clean» означает
+  // «механическая часть чиста», а не «#std437 проверен целиком».
+  const hitDot = findings.some((f) => f.rule === 'qg:BSL-REF-DOT-ACCESS');
+  recordRun({
+    scope: 'attribute-access',
+    tool: 'tools/bsl-lint.mjs',
+    verdict: hitDot ? 'violation' : 'clean',
+    files,
+  });
+  lines.push(
+    '[qg applied: layer=code, scope=attribute-access, ids=[qg:BSL-REF-DOT-ACCESS,std437], ' +
+      `verdict=${hitDot ? 'violation:qg:BSL-REF-DOT-ACCESS' : 'clean'}]`
   );
 
   return lines.join('\n');

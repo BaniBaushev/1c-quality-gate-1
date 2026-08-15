@@ -93,10 +93,17 @@ export const SCOPES = {
     tool: null,
     about: 'запрос внутри цикла, N+1 (#std436)',
   },
+  // Инструментальным стал не сразу: правило `qg:BSL-REF-DOT-ACCESS` покрывает ярус A
+  // (имя базы оканчивается на «Ссылка»), остальное по-прежнему разбирает модель. Имя скоупа
+  // при этом одно на обе половины намеренно. Заведи инструменту собственное имя — и
+  // рукописная строка `attribute-access ... clean` продолжила бы проходить валидатор, а
+  // именно она и была дырой: проверка без инструмента ничем не фальсифицировалась.
   'attribute-access': {
     layer: 'code',
-    tool: null,
-    about: 'обращение к реквизитам через точку в цикле (#std437)',
+    tool: 'tools/bsl-lint.mjs',
+    about: 'обращение к реквизиту ссылки через точку (#std437); инструмент покрывает ярус A',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
   },
   'api-verification': {
     layer: 'code',
@@ -239,6 +246,7 @@ export const QG_IDS = {
   'qg:BSL-TXN-IN-HANDLER': { tool: 'tools/bsl-lint.mjs' },
   'qg:BSL-ENUM-STRING-ASSIGN': { tool: 'tools/bsl-lint.mjs' },
   'qg:BSL-UNBOUNDED-STRING-COLUMN': { tool: 'tools/bsl-lint.mjs' },
+  'qg:BSL-REF-DOT-ACCESS': { tool: 'tools/bsl-lint.mjs' },
 
   // --- код, модельные ------------------------------------------------------
   'qg:QRY-EXECUTED': { tool: null },
