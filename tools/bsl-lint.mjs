@@ -2,13 +2,17 @@
 /**
  * Лексические проверки кода BSL — то, что видно по тексту модуля и его пути.
  *
- * Проверки две:
+ * Проверки три:
  *   - `qg:BSL-TXN-IN-HANDLER` — собственная транзакция внутри обработчика события объекта,
  *     который платформа и так выполняет в транзакции;
  *   - `qg:BSL-ENUM-STRING-ASSIGN` — присваивание примитива ("", 0, Ложь, Истина) полю,
  *     которое по XML объекта метаданных имеет строго ссылочный тип (EnumRef, CatalogRef…).
  *     Сборка на такое молчит — тела модулей не компилируются, — а падение приходит при
  *     записи, часто в редко исполняемой ветке. Пустое значение ссылки — `ПустаяСсылка()`.
+ *   - `qg:BSL-UNBOUNDED-STRING-COLUMN` — колонка таблицы, объявленная как «Строка» без
+ *     `КвалификаторыСтроки`, у таблицы, которая в том же модуле уходит в
+ *     `УстановитьПараметр`. Поле неограниченной длины движок запросов не умеет сравнивать:
+ *     `РАЗЛИЧНЫЕ`, `СГРУППИРОВАТЬ ПО`, соединение, `ГДЕ` (#std432 п. 3.1).
  *
  * Зачем отдельный инструмент, а не правило в своде. Правило «не открывай транзакцию в
  * обработчике» формулируется одной строкой и ровно поэтому его легко не применить: проверка
@@ -30,7 +34,13 @@
  *   - XML объекта ищется вверх от модуля (`<Вид>/<Имя>/Ext/*.bsl` → `<Вид>/<Имя>.xml`);
  *     модуль вне выгрузки метаданных проверяется только на транзакции;
  *   - имена обработчиков только русские: английские идентификаторы платформа понимает, но в
- *     прикладном коде они не встречаются.
+ *     прикладном коде они не встречаются;
+ *   - колонка без квалификатора связывается с запросом только через `УстановитьПараметр` в
+ *     ТОМ ЖЕ модуле и по корневому идентификатору таблицы. Самая коварная форма — таблица
+ *     уходит параметром в чужой метод, и запрос делает он — здесь не ловится вообще: графа
+ *     вызовов инструмент не строит. Эта половина остаётся за читателем (`qg:AI-16`);
+ *   - тип колонки читается только из литерала прямо в вызове: `ОписаниеТипов`, собранное
+ *     в переменную выше по тексту, инструменту не видно.
  *
  * Использование:
  *   node bsl-lint.mjs <файл.bsl> [<файл.bsl> ...] [--json]
@@ -278,12 +288,197 @@ export function lintRefAssignments(source, fields) {
   return findings;
 }
 
+// ---------------------------------------------------------------------------
+// Строковая колонка без квалификатора длины у таблицы, уходящей в запрос
+
+/**
+ * Гасит комментарии, СОХРАНЯЯ содержимое литералов, — и снова без сдвига позиций.
+ *
+ * `maskModule` для этой проверки не годится: тип колонки записан строковым литералом
+ * (`Новый ОписаниеТипов("Строка")`), а маска гасит именно литералы. Структурный разбор
+ * (границы вызова, запятые верхнего уровня) при этом всё равно идёт по `maskModule`:
+ * скобка или запятая внутри литерала — «Артикул (осн.)» — иначе рвала бы баланс.
+ * Обе маски равной длины с исходником, поэтому позиции одной применимы к другой.
+ */
+export function maskComments(source) {
+  const chars = source.split('');
+  let i = 0;
+  let inString = false;
+  while (i < chars.length) {
+    if (!inString && chars[i] === '/' && chars[i + 1] === '/') {
+      while (i < chars.length && chars[i] !== '\n') {
+        chars[i] = ' ';
+        i++;
+      }
+      continue;
+    }
+    if (chars[i] === '"') {
+      if (inString && chars[i + 1] === '"') {
+        i += 2;
+        continue;
+      }
+      inString = !inString;
+    }
+    i++;
+  }
+  return chars.join('');
+}
+
+/** Границы аргументов вызова по балансу скобок; `open` — позиция открывающей. */
+function callArgs(masked, open) {
+  let depth = 0;
+  for (let i = open; i < masked.length; i++) {
+    if (masked[i] === '(') depth++;
+    else if (masked[i] === ')') {
+      depth--;
+      if (depth === 0) return { start: open + 1, end: i };
+    }
+  }
+  return null;
+}
+
+/** Аргументы, разделённые запятыми ВЕРХНЕГО уровня: вложенный вызов не считается границей. */
+function splitArgs(masked, start, end) {
+  const parts = [];
+  let depth = 0;
+  let from = start;
+  for (let i = start; i < end; i++) {
+    const c = masked[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === ',' && depth === 0) {
+      parts.push({ start: from, end: i });
+      from = i + 1;
+    }
+  }
+  parts.push({ start: from, end });
+  return parts;
+}
+
+const ROOT_IDENT_RE = new RegExp(`^\\s*(${IDENT})`, 'u');
+
+/** Первый идентификатор выражения: для «Результат.Таблица.Скопировать()» это «Результат». */
+function rootIdent(text) {
+  const m = text.match(ROOT_IDENT_RE);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/**
+ * Таблицы, уходящие в запрос: вторые аргументы всех `УстановитьПараметр` модуля.
+ *
+ * Ключ — корневой идентификатор, а не полное выражение: `УстановитьПараметр("Т", Данные.Строки)`
+ * и `Данные.Строки.Колонки.Добавить(…)` должны сойтись. Плата за это — более широкое
+ * совпадение (другое поле того же «Данные» тоже сойдётся), и потому находка — предупреждение.
+ */
+export function queryParameterTables(masked) {
+  const tables = new Set();
+  const re = word('УстановитьПараметр');
+  let m;
+  while ((m = re.exec(masked)) !== null) {
+    const open = masked.indexOf('(', m.index + m[0].length);
+    if (open === -1 || masked.slice(m.index + m[0].length, open).trim() !== '') continue;
+    const range = callArgs(masked, open);
+    if (!range) continue;
+    const parts = splitArgs(masked, range.start, range.end);
+    if (parts.length < 2) continue;
+    const root = rootIdent(masked.slice(parts[1].start, parts[1].end));
+    if (root) tables.add(root);
+  }
+  return tables;
+}
+
+const COLUMNS_ADD_RE = new RegExp(
+  `(?<![${W}.])(${IDENT}(?:\\s*\\.\\s*${IDENT})*)\\s*\\.\\s*Колонки\\s*\\.\\s*(?:Добавить|Вставить)\\s*\\(`,
+  'giu'
+);
+const NEW_TYPE_DESC_RE = word('Новый\\s+ОписаниеТипов');
+const STRING_QUALIFIER_RE = word('КвалификаторыСтроки');
+
+/** Первый литерал диапазона — им задан либо список типов, либо имя колонки. */
+function firstLiteral(withLiterals, start, end) {
+  const m = withLiterals.slice(start, end).match(/"([^"]*)"/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Строка без квалификатора длины в колонке таблицы, уходящей в запрос.
+ *
+ * Колонка, объявленная как `Новый ОписаниеТипов("Строка")`, имеет НЕОГРАНИЧЕННУЮ длину.
+ * Помещённая во временную таблицу, она роняет запрос везде, где значения сравниваются
+ * между собой: `РАЗЛИЧНЫЕ`, `ОБЪЕДИНИТЬ` без `ВСЕ`, `СГРУППИРОВАТЬ ПО`, условие соединения,
+ * `ГДЕ`, `УПОРЯДОЧИТЬ ПО`, `ИНДЕКСИРОВАТЬ ПО` — «Нельзя сравнивать поля неограниченной
+ * длины». Ни сборка, ни анализатор этого не видят: тип задан в рантайме, а текст запроса
+ * остаётся литералом.
+ *
+ * Якорь: #std432 п. 3.1 (приведение к длине для сравнения, группировки и `РАЗЛИЧНЫЕ`) и
+ * п. 2 (когда неограниченная строка законна).
+ */
+export function lintUnboundedColumns(source) {
+  const masked = maskModule(source);
+  const withLiterals = maskComments(source);
+  const tables = queryParameterTables(masked);
+  if (tables.size === 0) return [];
+
+  const findings = [];
+  COLUMNS_ADD_RE.lastIndex = 0;
+  let m;
+  while ((m = COLUMNS_ADD_RE.exec(masked)) !== null) {
+    const receiver = m[1].replace(/\s+/g, '');
+    if (!tables.has(rootIdent(m[1]))) continue;
+
+    const range = callArgs(masked, m.index + m[0].length - 1);
+    if (!range) continue;
+
+    // Квалификатор ищется во ВСЕЙ скобке вызова: он лежит третьим аргументом
+    // «ОписаниеТипов», а тот может быть завёрнут во что угодно.
+    STRING_QUALIFIER_RE.lastIndex = 0;
+    if (STRING_QUALIFIER_RE.test(masked.slice(range.start, range.end))) continue;
+
+    NEW_TYPE_DESC_RE.lastIndex = range.start;
+    const typeDesc = NEW_TYPE_DESC_RE.exec(masked);
+    if (!typeDesc || typeDesc.index >= range.end) continue;
+
+    const typeOpen = masked.indexOf('(', typeDesc.index + typeDesc[0].length);
+    if (typeOpen === -1 || typeOpen >= range.end) continue;
+    const typeRange = callArgs(masked, typeOpen);
+    if (!typeRange) continue;
+
+    // Список типов — первый аргумент «ОписаниеТипов». Строгое совпадение с «Строка»
+    // отсекает «СтрокаТабличнойЧасти» и прочие имена, начинающиеся так же.
+    const typeParts = splitArgs(masked, typeRange.start, typeRange.end);
+    const declared = firstLiteral(withLiterals, typeParts[0].start, typeParts[0].end) || '';
+    if (!declared.split(',').some((t) => t.trim().toLowerCase() === 'строка')) continue;
+
+    const columnParts = splitArgs(masked, range.start, range.end);
+    const column = firstLiteral(withLiterals, columnParts[0].start, columnParts[0].end);
+    const where = column ? `«${column}»` : 'колонка';
+
+    findings.push({
+      severity: 'warn',
+      rule: 'qg:BSL-UNBOUNDED-STRING-COLUMN',
+      line: lineAt(source, m.index),
+      table: receiver,
+      column: column || null,
+      message:
+        `${where} у «${receiver}»: «Строка» без «КвалификаторыСтроки» — колонка неограниченной длины, ` +
+        `а «${receiver}» в этом же модуле уходит в «УстановитьПараметр». В РАЗЛИЧНЫЕ, СГРУППИРОВАТЬ ПО, ` +
+        'соединении и сравнении такое поле даёт ошибку выполнения «Нельзя сравнивать поля неограниченной ' +
+        'длины» (#std432 п.3.1). Квалификатор: Новый ОписаниеТипов("Строка", , Новый КвалификаторыСтроки(N)). ' +
+        'Если колонка несёт длинный текст, квалификатор её обрежет — тогда длину назначает запрос: ' +
+        'ВЫРАЗИТЬ(… КАК СТРОКА(N)). Попадает ли колонка в сравнение, отсюда не видно: если поле только ' +
+        'выводится, находка ложная',
+    });
+  }
+  return findings;
+}
+
 function checkFile(path) {
   if (!existsSync(path)) {
     return { findings: [{ severity: 'error', rule: 'file-missing', line: 0, message: 'файл не найден' }], metaResolved: false };
   }
   const source = readFileSync(path, 'utf8').replace(/^﻿/, '');
   const findings = lintSource(source, basename(path));
+  findings.push(...lintUnboundedColumns(source));
   const objectXml = findObjectXml(path);
   let metaResolved = false;
   if (objectXml) {
@@ -329,6 +524,21 @@ function evidenceBlock(findings, modulesSeen, metaResolved, files = []) {
       ? '[qg skipped: layer=code, scope=enum-string-assign, reason=no_metadata_resolved]'
       : '[qg applied: layer=code, scope=enum-string-assign, ids=[qg:BSL-ENUM-STRING-ASSIGN], ' +
         `verdict=${hitRef ? 'violation:qg:BSL-ENUM-STRING-ASSIGN' : 'clean'}]`
+  );
+
+  // Пропуска у этой проверки нет: она применима к ЛЮБОМУ модулю, метаданных ей не нужно, и
+  // модуль без `Колонки.Добавить` — это проверенный модуль, а не непроверяемый. Заяви
+  // инструмент здесь `not_applicable`, и покрытие изменённых .bsl осталось бы незакрытым.
+  const hitCols = findings.some((f) => f.rule === 'qg:BSL-UNBOUNDED-STRING-COLUMN');
+  recordRun({
+    scope: 'unbounded-string-column',
+    tool: 'tools/bsl-lint.mjs',
+    verdict: hitCols ? 'violation' : 'clean',
+    files,
+  });
+  lines.push(
+    '[qg applied: layer=code, scope=unbounded-string-column, ids=[qg:BSL-UNBOUNDED-STRING-COLUMN], ' +
+      `verdict=${hitCols ? 'violation:qg:BSL-UNBOUNDED-STRING-COLUMN' : 'clean'}]`
   );
 
   return lines.join('\n');

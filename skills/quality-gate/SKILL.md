@@ -186,22 +186,22 @@ node "$QG/tools/config.mjs" show
 
 Гонять инструмент по частям можно — прогоны складываются. Передавай ему все изменённые файлы
 своего вида: список даёт `gate.mjs status`. **`query-lint` принимает не только `.bsl`:
-изменённые XML тоже передаются ему** — он читает тексты запросов из `<query>` схем
-компоновки данных и `<QueryText>` динамических списков, а XML без запросов честно отмечает
-как просмотренный. Покрытие по `.xml` сверяется так же, как по `.bsl`.
+изменённые XML тоже передаются ему** — он читает `<query>` схем компоновки и `<QueryText>`
+динамических списков, а XML без запросов отмечает как просмотренный. Покрытие по `.xml`
+сверяется так же, как по `.bsl`.
 
 | Проверка (`scope`) | Инструмент |
 |---|---|
 | `static-analysis` | `tools/analyzer-run.mjs` |
 | `query-alias-shadowing`, `query-top-order` | `tools/query-lint.mjs` (`.bsl` и `.xml`) |
-| `transaction-nesting`, `enum-string-assign` | `tools/bsl-lint.mjs` |
+| `transaction-nesting`, `enum-string-assign`, `unbounded-string-column` | `tools/bsl-lint.mjs` |
 | `file-encoding` | `tools/hygiene-check.mjs` |
 | `registration-check` | `tools/xml/orphan-check.mjs` |
 | `uuid-uniqueness` | `tools/xml/uuid-unique.mjs` |
 | `structure-validation` | `tools/xml/meta-validate.py` |
 
 Остальные проверки (архитектурные признаки, разбор стандартов, верификация API) инструмента
-не имеют и выполняются разбором — журнала для них не требуется. Полный словарь имён —
+не имеют: журнала для них не требуется. Полный словарь имён —
 `tools/evidence-scopes.mjs`; имя вне словаря валидатор отвергает, потому что закрывает
 требование, которого не выполняло.
 

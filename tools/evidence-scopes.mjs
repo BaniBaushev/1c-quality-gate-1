@@ -81,6 +81,13 @@ export const SCOPES = {
     granularity: 'files',
     applies: ['.bsl', '.os']
   },
+  'unbounded-string-column': {
+    layer: 'code',
+    tool: 'tools/bsl-lint.mjs',
+    about: 'строковая колонка без квалификатора длины у таблицы, уходящей в параметр запроса',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
+  },
   'query-in-loop': {
     layer: 'code',
     tool: null,
@@ -231,6 +238,7 @@ export const QG_IDS = {
   'qg:QRY-TOP-WITHOUT-ORDER': { tool: 'tools/query-lint.mjs' },
   'qg:BSL-TXN-IN-HANDLER': { tool: 'tools/bsl-lint.mjs' },
   'qg:BSL-ENUM-STRING-ASSIGN': { tool: 'tools/bsl-lint.mjs' },
+  'qg:BSL-UNBOUNDED-STRING-COLUMN': { tool: 'tools/bsl-lint.mjs' },
 
   // --- код, модельные ------------------------------------------------------
   'qg:QRY-EXECUTED': { tool: null },
