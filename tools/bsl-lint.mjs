@@ -539,7 +539,11 @@ export function lintRefDotAccess(source) {
       const baseSegment = segments[i - 1];
       const field = segments[i];
       if (!lower[i - 1].endsWith('ссылка')) continue;
-      if (FREE_FIELDS.has(lower[i])) break;
+      // `continue`, а не `break`: свободное поле — пропуск ОДНОГО звена, а не конца цепочки.
+      // В `ЗаказСсылка.Ссылка.Дата` первое звено чтения не делает, второе делает, и обрыв
+      // разбора здесь прятал бы настоящее разыменование за безобидным префиксом.
+      if (FREE_FIELDS.has(lower[i])) continue;
+      // А вот отбор обрывает цепочку целиком: ссылкой не является ни одно её звено.
       if (lower.slice(0, i).some((s) => NON_REF_CHAIN.has(s))) break;
 
       // Вызов метода объектом не читает: `Ссылка.ПолучитьОбъект()`, `Ссылка.Пустая()`.
