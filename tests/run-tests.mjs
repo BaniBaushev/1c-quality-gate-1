@@ -18,7 +18,7 @@
  *   node tests/run-tests.mjs [--verbose]
  */
 
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -1716,7 +1716,10 @@ const mustContain = [
   ['skills/xml-structure-review/SKILL.md', 'печатают сами инструменты', 'контур XML переносит вывод инструментов'],
   // Файл, до которого анализатор не добрался, раньше исчезал из отчёта бесследно.
   ['skills/quality-gate/references/evidence-format.md', 'not_in_analyzer_report', 'непроверенные анализатором файлы заявляются'],
-  ['skills/quality-gate/SKILL.md', 'не встреченный в', 'оркестратор объясняет, когда файл считается непроверенным'],
+  // Разбор переехал в справочник формата следа: в навыке остался указатель и требование
+  // переносить запись дословно. Гарантия follows содержимое, а не место.
+  ['skills/quality-gate/references/evidence-format.md', 'неотличимый от чистого', 'непроверенный анализатором файл разобран в формате следа'],
+  ['skills/quality-gate/SKILL.md', 'не добрался анализатор', 'оркестратор называет непроверенные анализатором файлы'],
   ['README.md', 'qg-runs.jsonl', 'README называет журнал прогонов'],
   // Покрытие и «не применимо»: прогон по одному файлу закрывал заявление обо всех, а
   // not_applicable закрывал любую проверку без единого запуска.
@@ -1737,10 +1740,65 @@ const mustContain = [
   ['skills/bsl-code-review/references/checklist-code.md', 'BSL-UNBOUNDED-STRING-COLUMN', 'колонка без квалификатора — пункт чеклиста'],
   ['agents/bsl-verifier.md', 'BSL-UNBOUNDED-STRING-COLUMN', 'верификатор прогоняет проверку колонок'],
   ['skills/bsl-code-review/references/bsl-query-reference.md', 'КвалификаторыСтроки', 'справочник языка называет типизацию колонок таблицы-параметра'],
+  // Обязательное к прочтению: если из навыка усвоен только этот блок, прогон ещё имеет смысл.
+  ['skills/quality-gate/SKILL.md', 'Инварианты прогона', 'у оркестратора выделен минимум, держащий прогон'],
+  // Обоснования переехали, но обязаны существовать: правило без причины не применяется.
+  ['skills/quality-gate/references/profile-axes.md', 'асимметричны', 'разбор асимметрии минимумов по контурам сохранён'],
+  ['skills/quality-gate/references/run-environment.md', 'sort -V', 'разбор порядка источников пути к плагину сохранён'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
   check(`правило на месте: ${label}`, existsSync(p) && readFileSync(p, 'utf8').includes(needle));
+}
+
+// ---------------------------------------------------------------------------
+section('Бюджет навыков и достижимость справочников');
+
+{
+  // Предел пакета (32 768 байт) — порог отказа, а не план. Навык, доросший до него,
+  // обнаруживается в момент, когда очередную строку уже некуда положить: строку в таблицу
+  // инструментов пришлось оплачивать сжатием соседнего абзаца. Свой бюджет ниже предела
+  // ловит рост заранее, а число в нём называет долг вслух.
+  const BUDGET = {
+    'quality-gate': 28 * 1024,
+    // Долг: 30 КБ при пределе 32. Следующий на дробление по той же границе — исполняемое
+    // остаётся в навыке, обосновывающее уходит в references.
+    'bsl-code-review': 31 * 1024,
+    'xml-structure-review': 24 * 1024,
+    'bsl-architecture-review': 20 * 1024,
+    'file-hygiene': 12 * 1024,
+  };
+  const skills = readdirSync(join(ROOT, 'skills')).filter((d) => existsSync(join(ROOT, 'skills', d, 'SKILL.md')));
+
+  for (const name of skills) {
+    const limit = BUDGET[name];
+    // Навык без бюджета — дыра: он растёт до предела пакета молча, и ровно так эта
+    // проверка перестала бы что-либо гарантировать.
+    check(`у навыка ${name} есть бюджет`, limit !== undefined, 'добавь его в BUDGET');
+    if (limit === undefined) continue;
+    const size = Buffer.byteLength(readFileSync(join(ROOT, 'skills', name, 'SKILL.md'), 'utf8'), 'utf8');
+    check(`${name}: ${size} байт в бюджете ${limit}`, size <= limit, `перерос на ${size - limit} байт`);
+  }
+
+  // Справочник, которого навык не называет, не читается никогда: он выглядит частью навыка,
+  // а фактически мёртв — и правило в нём не действует, хотя написано. Форма ссылки в навыках
+  // разная («references/имя.md» в прозе, голое имя файла в таблице архетипов), поэтому
+  // достаточно упоминания имени; проверяется факт адресации, а не её оформление.
+  for (const name of skills) {
+    const refDir = join(ROOT, 'skills', name, 'references');
+    if (!existsSync(refDir)) continue;
+    const skillText = readFileSync(join(ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+    const refs = readdirSync(refDir);
+    for (const ref of refs) {
+      // Достижимость через соседний справочник — законная форма: signs-map.json адресуется
+      // из своей человекочитаемой версии, а её называет навык. Сам файл из списка соседей
+      // исключён: упоминание собственного имени внутри себя достижимостью не является и
+      // делало бы проверку тождественно истинной.
+      const siblings = refs.filter((r) => r !== ref).map((r) => readFileSync(join(refDir, r), 'utf8')).join('\n');
+      const reachable = skillText.includes(ref) || siblings.includes(ref);
+      check(`${name}: справочник ${ref} достижим`, reachable, 'на него не ссылается ни навык, ни соседний справочник');
+    }
+  }
 }
 
 // Регрессия, которая в репозитории уже была: справочник языка подавал РАЗРЕШЕННЫЕ как выбор
