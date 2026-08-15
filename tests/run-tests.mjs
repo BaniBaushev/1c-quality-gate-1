@@ -1754,6 +1754,10 @@ const mustContain = [
   ['skills/bsl-code-review/references/cold-reader.md', 'независимость', 'условие независимости холодного читателя сохранено'],
   ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'BSL-ENUM-STRING-ASSIGN', 'примитив в ссылочном поле разобран в антипаттернах'],
   ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'Составные типы', 'у правила о ссылочных полях назван контр-сигнал'],
+  // Список обработчиков закрытый и ровно пятичленный: удаление и отмену проведения забывают
+  // чаще прочего, а инструмент их ловит — расхождение доку с инструментом недопустимо.
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'ОбработкаУдаленияПроведения', 'в списке неявных транзакций есть отмена проведения'],
+  ['skills/bsl-code-review/references/bsl-anti-patterns.md', 'ПередУдалением', 'в списке неявных транзакций есть удаление'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);
@@ -2157,6 +2161,17 @@ section('Реестр признаков — полнота: источники 
     }
   }
   check('каждый qg:* из инструментов есть в реестре', unknown.length === 0, [...new Set(unknown)].join('; '));
+
+  // Список обработчиков с неявной транзакцией в инструменте и в справочнике обязан совпадать.
+  // Ровно это и разъехалось при дроблении навыка: сжатая формулировка потеряла ПередУдалением
+  // и ОбработкаУдаленияПроведения, инструмент их ловил, а разбор глазами — уже нет.
+  const lintSrc = readFileSync(join(ROOT, 'tools', 'bsl-lint.mjs'), 'utf8');
+  const handlers = [...((lintSrc.match(/TRANSACTIONAL_HANDLERS = new Set\(\[([\s\S]*?)\]\)/) || [, ''])[1])
+    .matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  const antiPatterns = readFileSync(join(ROOT, 'skills/bsl-code-review/references/bsl-anti-patterns.md'), 'utf8').toLowerCase();
+  const lost = handlers.filter((h) => !antiPatterns.includes(h));
+  check('обработчики неявной транзакции названы и в справочнике', handlers.length === 5 && lost.length === 0,
+    `в инструменте ${handlers.length}, нет в справочнике: ${lost.join(', ') || '—'}`);
 }
 
 // ---------------------------------------------------------------------------
