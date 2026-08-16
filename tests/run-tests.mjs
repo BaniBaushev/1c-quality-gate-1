@@ -750,55 +750,6 @@ section('Разыменование ссылки через точку');
     `находки: ${hits.join(', ')}`);
 }
 {
-  // Ярус C: доменные имена, конвенции не подчиняющиеся. Плагин их не угадывает — список
-  // называет проект. Ровно из-за такого имени класс и попал в плагин: находка в живом
-  // проекте была на имени, которое ни под какую конвенцию не подходит.
-  const proj = join(WORK, 'dot-dict-proj');
-  rmSync(proj, { recursive: true, force: true });
-  mkdirSync(join(proj, 'Ext'), { recursive: true });
-  writeFileSync(join(proj, '.1c-quality-gate.json'),
-    JSON.stringify({ refDotAccess: { refNames: ['ОсновнойСклад'] } }), 'utf8');
-  const module = join(proj, 'Ext', 'Module.bsl');
-  writeFileSync(module, [
-    'Процедура Проверить(ОсновнойСклад, ТекущийОсновнойСклад, Прочее) Экспорт',
-    '\tАдрес = ОсновнойСклад.Адрес;',
-    '\tГород = ТекущийОсновнойСклад.Город;',
-    '\tИное = Прочее.Поле;',
-    '\tОбъект = ОсновнойСклад.ПолучитьОбъект();',
-    'КонецПроцедуры',
-  ].join('\n'), 'utf8');
-
-  const withDict = run('tools/bsl-lint.mjs', [module], { env: { CLAUDE_PROJECT_DIR: proj } });
-  check('имя из словаря — находка', withDict.out.includes('«ОсновнойСклад.Адрес»'), withDict.out.trim().slice(0, 200));
-  check('совпадение по окончанию имени тоже', withDict.out.includes('«ТекущийОсновнойСклад.Город»'),
-    withDict.out.trim().slice(0, 300));
-  check('основание словаря названо в находке', withDict.out.includes('refDotAccess.refNames'),
-    withDict.out.trim().slice(0, 300));
-  // 🟠, а не 🔴: основание — чужой список, а не механика платформы. Отсюда код 1, не 2.
-  const dictHits = (withDict.out.match(/ВНИМАНИЕ:(\d+)/g) || []);
-  check('находка по словарю — предупреждение (код 1)', withDict.code === 1 && dictHits.length === 2,
-    `код ${withDict.code}, находки: ${dictHits.join(', ')}`);
-  check('имя вне словаря и вызов метода — молчание', !withDict.out.includes('«Прочее.Поле»'),
-    withDict.out.trim().slice(0, 300));
-
-  // Тот же модуль без настройки: ярус C выключен. Это законный исход, но он обязан быть
-  // виден — иначе «чисто» по проекту с ненастроенным словарём неотличимо от проверенного
-  // кода. Видимость даёт отметка config: секция не переопределена — значит `config=default`.
-  const noDict = join(WORK, 'dot-nodict-proj');
-  rmSync(noDict, { recursive: true, force: true });
-  mkdirSync(join(noDict, 'Ext'), { recursive: true });
-  writeFileSync(join(noDict, 'Ext', 'Module.bsl'), readFileSync(module, 'utf8'), 'utf8');
-  const without = run('tools/bsl-lint.mjs', [join(noDict, 'Ext', 'Module.bsl')], { env: { CLAUDE_PROJECT_DIR: noDict } });
-  check('без словаря ярус C молчит', without.code === 0, without.out.trim().slice(0, 200));
-
-  const marked = run('tools/config.mjs', ['show'], { env: { CLAUDE_PROJECT_DIR: proj } });
-  check('настроенный словарь виден в отметке следа', marked.out.includes('config=custom:refDotAccess'),
-    marked.out.trim().slice(-160));
-  const plain = run('tools/config.mjs', ['show'], { env: { CLAUDE_PROJECT_DIR: noDict } });
-  check('ненастроенный словарь виден как config=default', plain.out.includes('config=default'),
-    plain.out.trim().slice(-160));
-}
-{
   // Ссылка без подсказки в имени — ярус A её не видит. Это заявленная нижняя граница, а не
   // дефект: молчание здесь честнее догадки, и разбор глазами правило не отменяет.
   const f = writeBytes('dot-access-unnamed/Ext/Module.bsl', [
@@ -1894,10 +1845,6 @@ const mustContain = [
   ['skills/bsl-code-review/references/ai-antipatterns.md', 'Механизированная часть', 'AI-02 указывает на механизированную половину'],
   ['skills/bsl-code-review/SKILL.md', 'нижнюю границу, а не верхнюю', 'контур предупреждает, что инструмент покрывает часть скоупа'],
   ['skills/bsl-code-review/references/checklist-code.md', 'BSL-REF-DOT-ACCESS', 'чтение реквизита через точку — пункт чеклиста'],
-  // Ярус C: механизм документирован, значения — нет. Плагин публичный, доменные имена
-  // конкретной конфигурации в него не попадают даже примером.
-  ['docs/CONFIG.md', 'refDotAccess.refNames', 'проектный словарь ссылочных имён документирован'],
-  ['docs/CONFIG.md', 'config=default', 'ненастроенный словарь заявлен как видимый в следе'],
 ];
 for (const [file, needle, label] of mustContain) {
   const p = join(ROOT, file);

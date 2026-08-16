@@ -51,26 +51,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { recordRun } from './run-journal.mjs';
-import { versionSuffix, readConfig } from './config.mjs';
-
-/**
- * Проектный словарь ссылочных имён для яруса C — читается один раз на прогон.
- *
- * Настройка недоступна (запуск вне проекта, повреждённый файл) — словарь пуст, ярус C молчит.
- * Падать тут нечему: остальные ярусы от настройки не зависят, а «правило не сработало из-за
- * конфига» и «нарушений нет» различаются в следе полем `config`.
- */
-let refNamesCache = null;
-function refDictionary() {
-  if (refNamesCache) return refNamesCache;
-  try {
-    const value = readConfig()?.refDotAccess?.refNames;
-    refNamesCache = Array.isArray(value) ? value : [];
-  } catch {
-    refNamesCache = [];
-  }
-  return refNamesCache;
-}
+import { versionSuffix } from './config.mjs';
 
 /** Символы идентификатора 1С: кириллица делает `\b` в JS бесполезной. */
 const W = 'A-Za-zА-Яа-яЁё0-9_';
@@ -523,16 +504,6 @@ const MANAGERS = new Set([
 const CHAIN_RE = new RegExp(`(?<![${W}.])(${IDENT})((?:\\s*\\.\\s*${IDENT})+)`, 'giu');
 
 /**
- * Сравнение имён яруса C: регистр не важен, «ё» и «е» — одна буква.
- *
- * Без нормализации словарь пришлось бы вести парами («УчётнаяЗапись», «УчетнаяЗапись»), и
- * первая же забытая пара давала бы пропуск, неотличимый от «имени нет в словаре».
- */
-function normalizeName(s) {
-  return s.toLowerCase().replace(/ё/g, 'е');
-}
-
-/**
  * Обращение к реквизиту ссылочного значения через точку.
  *
  * Точка у ссылки читает объект ЦЕЛИКОМ — все реквизиты и все табличные части — ради одного
@@ -547,24 +518,13 @@ function normalizeName(s) {
  * фальсифицировалось: в живой сессии четыре разыменования пережили два прогона гейта с
  * рукописной строкой следа.
  *
- * ЯРУС A: имя базы оканчивается на «Ссылка» — конвенция именования, а не вывод типов, и
- * потому основание твёрдое ровно настолько, насколько автор ей следовал. Severity 🔴, как у
- * антипаттерна в своде.
- *
- * ЯРУС C: имя базы совпадает с именем из проектного словаря `refDotAccess.refNames` либо
- * оканчивается на него (`ТекущаяУчётнаяЗапись` при словарном «УчётнаяЗапись»). Ссылки,
- * не подчиняющиеся конвенции, живут в каждой конфигурации свои, и угадывать их плагин не
- * должен. Severity 🟠: основание — чужой список, а не механика платформы, и находка
- * формулируется как вопрос.
- *
- * Покрытие остаётся частичным при любом ярусе: инструмент задаёт нижнюю границу проверки
- * #std437, а не верхнюю. Ссылку, пришедшую параметром без подсказки ни в имени, ни в словаре,
- * он не распознаёт — и это заявлено в навыке. Пустой словарь виден в следе сам: секция
- * настройки не переопределена, значит в записи `scope` стоит `config=default`.
+ * ЯРУС A — единственный реализованный: имя базы оканчивается на «Ссылка». Это конвенция
+ * именования, а не вывод типов, поэтому покрытие частичное: инструмент задаёт нижнюю границу
+ * проверки #std437, а не верхнюю. Ссылку, пришедшую параметром без подсказки в имени, он не
+ * распознаёт — и это заявлено в записи следа и в навыке.
  */
-export function lintRefDotAccess(source, refNames = []) {
+export function lintRefDotAccess(source) {
   const masked = maskModule(source);
-  const dictionary = refNames.filter((n) => typeof n === 'string' && n.trim()).map(normalizeName);
   const findings = [];
 
   CHAIN_RE.lastIndex = 0;
@@ -578,10 +538,7 @@ export function lintRefDotAccess(source, refNames = []) {
     for (let i = 1; i < segments.length; i++) {
       const baseSegment = segments[i - 1];
       const field = segments[i];
-      const byName = lower[i - 1].endsWith('ссылка');
-      const normalized = normalizeName(baseSegment);
-      const byDictionary = !byName && dictionary.some((n) => normalized === n || normalized.endsWith(n));
-      if (!byName && !byDictionary) continue;
+      if (!lower[i - 1].endsWith('ссылка')) continue;
       // `continue`, а не `break`: свободное поле — пропуск ОДНОГО звена, а не конца цепочки.
       // В `ЗаказСсылка.Ссылка.Дата` первое звено чтения не делает, второе делает, и обрыв
       // разбора здесь прятал бы настоящее разыменование за безобидным префиксом.
@@ -597,25 +554,19 @@ export function lintRefDotAccess(source, refNames = []) {
       }
 
       const base = segments.slice(0, i).join('.');
-      // Основание попадает в текст находки: у яруса A это механика конвенции, у яруса C —
-      // чужой список, и читатель вправе взвешивать их по-разному. Обезличенная находка
-      // заставляла бы перепроверять оба случая одинаково подробно.
-      const ground = byName
-        ? `имя «${baseSegment}» оканчивается на «Ссылка»`
-        : `имя «${baseSegment}» есть в проектном словаре ссылочных имён (refDotAccess.refNames)`;
       findings.push({
-        severity: byName ? 'error' : 'warn',
+        severity: 'error',
         rule: 'qg:BSL-REF-DOT-ACCESS',
         line: lineAt(source, m.index),
         base,
         field,
-        ground: byName ? 'name' : 'dictionary',
         message:
           `«${base}.${field}»: обращение через точку у ссылочного значения — платформа прочитает объект ` +
           'целиком, все реквизиты и табличные части, ради одного поля (#std437, антипаттерн «Чтение ' +
           `реквизита через точку»). Замена: ОбщегоНазначения.ЗначениеРеквизитаОбъекта(${base}, "${field}"), ` +
-          `для нескольких полей — ЗначенияРеквизитовОбъекта одним вызовом. Основание эвристическое — ${ground}: ` +
-          'если это структура, элемент отбора или уже полученный объект, находка ложная',
+          'для нескольких полей — ЗначенияРеквизитовОбъекта одним вызовом. Основание эвристическое — имя ' +
+          `«${baseSegment}» оканчивается на «Ссылка»: если это структура, элемент отбора или уже полученный ` +
+          'объект, находка ложная',
       });
       break;
     }
@@ -630,7 +581,7 @@ function checkFile(path) {
   const source = readFileSync(path, 'utf8').replace(/^﻿/, '');
   const findings = lintSource(source, basename(path));
   findings.push(...lintUnboundedColumns(source));
-  findings.push(...lintRefDotAccess(source, refDictionary()));
+  findings.push(...lintRefDotAccess(source));
   const objectXml = findObjectXml(path);
   let metaResolved = false;
   if (objectXml) {
