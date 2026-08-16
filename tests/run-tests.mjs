@@ -1733,6 +1733,26 @@ section('Статический анализатор — нормализаци�
   check('bsl-analyzer: серьёзность отображена', na.findings[0]?.severity === 'major' && na.findings[1]?.severity === 'info');
   check('bsl-analyzer: метрики собраны', na.metrics.get('src/cf/CommonModules/Тест/Ext/Module.bsl')?.functions === 1);
 
+  // --- свёртка информационных находок ---------------------------------------
+  // Оформление интерфейса движок относит к `info`, и раньше оно пряталось вместе с
+  // типографикой, хотя в след прогона уходило как `violation`. Отчёт показывал «чисто» там,
+  // где след говорил «нарушение», — расхождение, обесценивающее обе стороны.
+  const infoFindings = [
+    { file: 'м.bsl', line: 10, code: 'MagicNumber', severity: 'info', message: 'число' },
+    { file: 'м.bsl', line: 20, code: 'PublicMethodsDescription', severity: 'info', message: 'нет описания' },
+    { file: 'м.bsl', line: 30, code: 'NonStandardRegion', severity: 'info', message: 'нестандартный раздел' },
+  ];
+  let folded = '';
+  analyzer.report(infoFindings, (s) => { folded += s + '\n'; });
+  check('оформление интерфейса печатается без --all', folded.includes('PublicMethodsDescription') && folded.includes('NonStandardRegion'), folded);
+  check('типографика по-прежнему свёрнута', !folded.includes(':10 — MagicNumber') && folded.includes('Ещё 1 информационных'), folded);
+  check('свёрнутый код назван в сводке', /Ещё 1 информационных: MagicNumber/.test(folded), folded);
+
+  let withAll = '';
+  analyzer.report(infoFindings, (s) => { withAll += s + '\n'; }, { all: true });
+  check('--all показывает всё и не пишет о свёрнутых', withAll.includes('MagicNumber') && !withAll.includes('информационных'), withAll);
+  check('белый список — только оформление интерфейса', analyzer.ALWAYS_SHOWN_INFO.has('PublicMethodsDescription') && !analyzer.ALWAYS_SHOWN_INFO.has('MagicNumber'));
+
   const lsReport = JSON.stringify({
     fileinfos: [
       {

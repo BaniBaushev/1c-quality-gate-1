@@ -532,16 +532,41 @@ const SEVERITY_MARK = { critical: '🔴', major: '🟠', minor: '🟡', info: '�
 const SEVERITY_RANK = { critical: 0, major: 1, minor: 2, info: 3 };
 
 /**
+ * Диагностики уровня `info`, которые печатаются всегда — исключение из свёртки ниже.
+ *
+ * Все они об оформлении программного интерфейса и структуре модуля (#std453, #std455):
+ * метод без описания, переменная без описания, код вне области, нестандартный или пустой
+ * раздел. Движок относит их к `info`, и свёртка прятала их вместе с типографикой — а в
+ * следе прогона они при этом стоят как `violation`. Читатель отчёта видел «чисто» там, где
+ * след говорил «нарушение»: расхождение, которое обесценивает обе стороны.
+ *
+ * Список подобран замером, а не на глаз: на расширении из 36 модулей эти коды дают 23 строки
+ * против 199 у типографики (`MagicNumber` 66, `NestedFunctionInParameters` 45,
+ * `CommentedCode` 36, `DuplicateStringLiteral` 31, `CanonicalSpellingKeywords` 21). Ради
+ * последних свёртка и существует — расширять этот набор можно только с таким же замером,
+ * иначе он вернёт ровно ту проблему, которую свёртка решает.
+ */
+export const ALWAYS_SHOWN_INFO = new Set([
+  'PublicMethodsDescription',
+  'MissingVariablesDescription',
+  'CodeOutOfRegion',
+  'NonStandardRegion',
+  'EmptyRegion',
+  'DuplicateRegion',
+]);
+
+/**
  * Печатает находки, сворачивая информационные в одну строку.
  *
  * Причина не в том, что они не важны, а в том, что на реальном модуле их вдесятеро больше
  * содержательных: `MagicNumber`, смешение латиницы и кириллицы в идентификаторах вида
  * `ВызватьHTTPМетод` (для 1С это норма, а диагностика отличить не может). Утопленная в них
  * находка 🟠 не будет прочитана. Ничего не скрывается: количество названо, коды попадают в
- * след, полный список доступен по `--all`.
+ * след, полный список доступен по `--all`. Исключения — `ALWAYS_SHOWN_INFO`.
  */
-function report(findings, out, { all = false } = {}) {
-  const shown = all ? findings : findings.filter((f) => f.severity !== 'info');
+export function report(findings, out, { all = false } = {}) {
+  const isFolded = (f) => f.severity === 'info' && !ALWAYS_SHOWN_INFO.has(f.code);
+  const shown = all ? findings : findings.filter((f) => !isFolded(f));
   const hidden = findings.length - shown.length;
 
   const byFile = new Map();
@@ -556,7 +581,7 @@ function report(findings, out, { all = false } = {}) {
     }
   }
   if (hidden) {
-    const codes = [...new Set(findings.filter((f) => f.severity === 'info').map((f) => f.code))].sort();
+    const codes = [...new Set(findings.filter(isFolded).map((f) => f.code))].sort();
     out(`\nЕщё ${hidden} информационных: ${codes.join(', ')} (полный список — флаг --all)`);
   }
 }
