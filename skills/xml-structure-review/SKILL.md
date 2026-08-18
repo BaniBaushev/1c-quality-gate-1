@@ -216,6 +216,8 @@ reason=python_unavailable]` и всё равно выполни пункт 1: с
 | Нарушен порядок объектов в составе | несоответствие каноническому порядку типов | `cfe-validate.py` |
 | Невалидные элементы формы | элементы вне схемы формата | `form-validate.py` |
 | Рассогласованные версии формата | разные версии в связанных файлах | `meta-validate.py` |
+| Обработчик формы без процедуры | `qg:XML-FORM-HANDLER-MISSING`: `<Event>` называет имя, которого нет ни в модуле формы, ни в модуле базовой формы. Открытию формы это не мешает (проверено на платформе) — дефект спит до наступления события, отсюда 🟠, а не блокировка | `form-validate.py` |
+| Действие команды без процедуры | `qg:XML-FORM-ACTION-MISSING`: то же для `<Action>` команды формы | `form-validate.py` |
 | Отсутствие хранилища вариантов у отчёта | не задано хранилище настроек | `epf-validate.py` |
 | Права объекта не заданы в роли | объект расширения не виден пользователю | пункт 4 |
 | Права выданы типу, у которого их нет | запись `Enum.*` или `ScheduledJob.*` в файле прав | `role-validate.py`, пункт 4 |
@@ -233,6 +235,7 @@ reason=python_unavailable]` и всё равно выполни пункт 1: с
 [qg applied: layer=xml, scope=registration-check, ids=[qg:XML-ORPHAN], verdict=violation:qg:XML-ORPHAN]
 [qg applied: layer=xml, scope=uuid-uniqueness, ids=[qg:XML-UUID-DUP], verdict=clean]
 [qg applied: layer=xml, scope=structure-validation, ids=[qg:XML-STRUCT], verdict=clean]
+[qg applied: layer=xml, scope=form-binding, ids=[qg:XML-FORM-HANDLER-MISSING,qg:XML-FORM-ACTION-MISSING], verdict=clean]
 [qg skipped: layer=xml, reason=not_applicable]
 ```
 

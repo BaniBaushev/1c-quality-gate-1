@@ -1270,6 +1270,78 @@ if (python.ok) {
       gempty.code === 0 && gempty.out.includes('qg:SKD-GROUP-EMPTY-SELECTION'), gempty.out.trim().slice(0, 200));
   }
 
+  // Связность формы и её модуля: имя обработчика и имя действия команды объявлены в XML,
+  // процедура — в модуле. Структуре файла ссылка на несуществующую процедуру не противоречит,
+  // поэтому валидатор схемы её пропускает, а форма падает при открытии.
+  {
+    const fb = (...parts) => xml('form-binding', ...parts, 'Ext', 'Form.xml');
+
+    const resolved = runPy(pyTool('form'), ['-Path', fb('resolved')]);
+    check('form: имена, разрешённые модулем, — молчание',
+      resolved.code === 0 && /Validation OK/.test(resolved.out), resolved.out.trim().slice(0, 160));
+    // Контр-сигналы внутри той же фикстуры: другой регистр имени, объявление ниже по файлу,
+    // слово-двойник в комментарии и в строковом литерале. Каждый — способ получить ложную
+    // находку, а ложная находка здесь дороже пропущенной.
+    check('form: след связности напечатан',
+      resolved.out.includes('scope=form-binding') && resolved.out.includes('verdict=clean'),
+      resolved.out.trim().slice(0, 200));
+
+    const dangling = runPy(pyTool('form'), ['-Path', fb('dangling')]);
+    check('form: обработчик без процедуры в модуле — находка',
+      dangling.out.includes('qg:XML-FORM-HANDLER-MISSING') && dangling.out.includes('ПриОткрытии'),
+      dangling.out.trim().slice(0, 200));
+    // Уровень Major без блокировки: опыт на платформе показал, что форма с повисшей привязкой
+    // открывается и работает — дефект спит до наступления события, а не ломает открытие.
+    check('form: связность не блокирует прогон', dangling.code === 0, dangling.out.trim().slice(0, 160));
+
+    // Модуль формы расширения сливается с модулем базовой формы: имя, объявленное там,
+    // разрешается законно. Без этого каждая заимствованная форма давала бы ложные находки.
+    const merge = join(WORK, 'form-merge');
+    rmSync(merge, { recursive: true, force: true });
+    const cfgForm = join(merge, 'src', 'cf', 'Catalogs', 'QG_Образец', 'Forms', 'ФормаЭлемента', 'Ext');
+    const extForm = join(merge, 'src', 'cfe', 'Расш', 'Catalogs', 'QG_Образец', 'Forms', 'ФормаЭлемента', 'Ext');
+    mkdirSync(join(cfgForm, 'Form'), { recursive: true });
+    mkdirSync(join(extForm, 'Form'), { recursive: true });
+    writeFileSync(join(merge, 'src', 'cf', 'Configuration.xml'),
+      '<MetaDataObject><Configuration/></MetaDataObject>\n', 'utf8');
+    writeFileSync(join(merge, 'src', 'cfe', 'Расш', 'Configuration.xml'),
+      '<MetaDataObject><Configuration><ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose></Configuration></MetaDataObject>\n', 'utf8');
+    writeFileSync(join(cfgForm, 'Form', 'Module.bsl'), BOM + 'Процедура ОплатитьКартой(Команда)\nКонецПроцедуры\n', 'utf8');
+    writeFileSync(join(extForm, 'Form', 'Module.bsl'), BOM + 'Процедура Расш1_ПриОткрытииПосле(Отказ)\nКонецПроцедуры\n', 'utf8');
+    const extFormXml = readFileSync(fb('resolved'), 'utf8')
+      .replace('<Events>', '<BaseForm version="2.20"/>\n\t<Events>')
+      .replace('<Event name="OnOpen">ПриОткрытии</Event>', '<Event name="OnOpen" callType="After">Расш1_ПриОткрытииПосле</Event>')
+      .replace('<Action>ОбновитьНаСервере</Action>', '<Action>ОплатитьКартой</Action>');
+    writeFileSync(join(extForm, 'Form.xml'), extFormXml, 'utf8');
+    const merged = runPy(pyTool('form'), ['-Path', join(extForm, 'Form.xml')]);
+    // Проверяется вердикт, а не наличие имени признака: чистая строка следа перечисляет
+    // оба признака как проверенные, и поиск по имени был бы зелёным всегда.
+    check('form: имя из модуля базовой формы разрешается',
+      !merged.out.includes('violation:qg:XML-FORM') && !merged.out.includes('[Binding]'),
+      merged.out.trim().slice(0, 220));
+
+    // Формы без модуля — обычное дело (204 в типовой конфигурации). Проверять связность
+    // нечем, и это пропуск самой проверки, а не измерение из закрытого списка: заявленное
+    // измерением, оно закрывало бы утверждение о разрешении имён, которого никто не делал.
+    const noModule = join(WORK, 'form-no-module', 'Ext');
+    rmSync(dirname(noModule), { recursive: true, force: true });
+    mkdirSync(noModule, { recursive: true });
+    writeFileSync(join(noModule, 'Form.xml'), readFileSync(fb('resolved'), 'utf8'), 'utf8');
+    const bare = runPy(pyTool('form'), ['-Path', join(noModule, 'Form.xml')]);
+    check('форма без модуля — пропуск проверки связности, а не измерение',
+      bare.out.includes('skipped') && bare.out.includes('scope=form-binding') &&
+        bare.out.includes('form_module_absent') && !bare.out.includes('dimension=cross-config-resolution'),
+      bare.out.trim().slice(0, 240));
+
+    // Основной конфигурации в репозитории может не быть вовсе — тогда имена базовой формы
+    // неразрешимы, и молчание о находках обязано быть заявлено, а не выдано за чистый результат.
+    rmSync(join(merge, 'src', 'cf'), { recursive: true, force: true });
+    const alone = runPy(pyTool('form'), ['-Path', join(extForm, 'Form.xml')]);
+    check('form: без основной конфигурации связность объявлена непроверенной',
+      alone.out.includes('not_verified') && alone.out.includes('main_configuration_absent'),
+      alone.out.trim().slice(0, 220));
+  }
+
   // Валидатор роли проверяет Rights.xml, а путь ему дают тремя разными способами. Раньше файл
   // метаданных роли разбирался как Rights.xml и давал ЛОЖНУЮ ошибку при меньшем числе проверок:
   // не отказ, а находка, которой нет в чужом коде. Три формы обязаны давать один результат.
@@ -2928,12 +3000,131 @@ section('Словарь проверок — закрытый список scope
   const wl = run('tools/evidence-validator.mjs', [wrongLayer], { env });
   check('несовпадение слоя названо', wl.out.includes('относится к слою hygiene'), wl.out.trim().slice(0, 160));
 
+  // Непроверенные файлы считает не только анализатор. Правило под одно имя пришлось бы
+  // дописывать на каждый новый инструмент, а до тех пор молчание о непроверенном проходило бы.
+  // Сверка с журналом живёт в режиме гейта — там же, где вердикт что-то закрывает.
+  {
+    const proj = join(WORK, 'ev-uncompared');
+    rmSync(proj, { recursive: true, force: true });
+    mkdirSync(join(proj, '.claude', '.state'), { recursive: true });
+    writeFileSync(
+      join(proj, '.claude', '.state', 'qg-runs.jsonl'),
+      JSON.stringify({
+        ts: '2026-01-01T00:00:00.000Z',
+        scope: 'stale-local-calls',
+        tool: 'tools/rename-check.mjs',
+        verdict: 'clean',
+        files: ['src/cf/a.bsl'],
+        unanalyzed: 2,
+      }) + '\n',
+      'utf8'
+    );
+    const body =
+      '## quality evidence' + '\n' + '\n' +
+      '[qg scope: volume=C1, files=1, archetypes=[none], driver=volume, resolved=code:L1, config=default]' + '\n' +
+      '[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found]' + '\n' +
+      '[qg applied: layer=code, scope=stale-local-calls, ids=[qg:BSL-STALE-LOCAL-CALL], verdict=clean]' + '\n' +
+      '[qg not_verified: dimension=compilation, reason=no_platform]' + '\n';
+    const silent = writeBytes('ev-uncompared.md', body);
+    const ru = run('tools/evidence-validator.mjs', [silent, '--gate'], { env: { CLAUDE_PROJECT_DIR: proj } });
+    check('молчание о несравнённых файлах отклонено',
+      ru.out.includes('не проверил 2 из переданных файлов'), ru.out.trim().slice(0, 220));
+
+    const declared = writeBytes('ev-uncompared-declared.md',
+      body + '[qg skipped: layer=code, scope=stale-local-calls, planned=[qg:BSL-STALE-LOCAL-CALL], reason=no_history, files=2]' + '\n');
+    const rd = run('tools/evidence-validator.mjs', [declared, '--gate'], { env: { CLAUDE_PROJECT_DIR: proj } });
+    check('заявленные несравнённые файлы принимаются',
+      !rd.out.includes('не проверил 2 из переданных файлов'), rd.out.trim().slice(0, 220));
+  }
+
   // Словарь — единственный источник: у каждой проверки с инструментом инструмент существует.
   for (const [scope, tool] of Object.entries(scopes.TOOL_BACKED)) {
     check(`инструмент проверки ${scope} на месте`, existsSync(join(ROOT, tool)), tool);
   }
   check('переименования ведут на существующие имена',
     Object.values(scopes.RENAMED).every((v) => scopes.isKnownScope(v)), Object.values(scopes.RENAMED).join(', '));
+}
+
+// ---------------------------------------------------------------------------
+section('Голый вызов метода, объявление которого исчезло в этой правке');
+
+// Класс из живого случая: метод переименован, два вызова остались со старым именем. Модуль
+// не компилируется, но до платформы это не доходит — сборка внешней обработки тела модулей
+// не компилирует, а анализатор об отказе связывания голого локального вызова молчит.
+// Проверка инверсная: сравнение с HEAD вместо словаря глобального контекста платформы.
+{
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' });
+  const repo = join(WORK, 'rename-repo');
+  rmSync(repo, { recursive: true, force: true });
+  const modDir = join(repo, 'src', 'cf', 'CommonModules', 'QG_Модуль', 'Ext');
+  mkdirSync(modDir, { recursive: true });
+  const modFile = join(modDir, 'Module.bsl');
+  const before =
+    BOM + 'Процедура ОбновитьСводкуНаСервере()\n	Возврат;\nКонецПроцедуры\n\n' +
+    'Процедура Показать()\n	ОбновитьСводкуНаСервере();\n	Сообщить("ОбновитьСводкуНаСервере()");\nКонецПроцедуры\n';
+  writeFileSync(modFile, before, 'utf8');
+  let gitOk = true;
+  try {
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 'qg@example.test');
+    git(repo, 'config', 'user.name', 'qg');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-qm', 'init');
+  } catch {
+    gitOk = false;
+  }
+
+  if (!gitOk) {
+    // В CI git обязан быть: молчаливый пропуск проверки неотличим от её прохождения.
+    check('git доступен для проверки переименований', !process.env.CI, 'git недоступен');
+  } else {
+    const runRename = (file) => run('tools/rename-check.mjs', [file], { env: { CLAUDE_PROJECT_DIR: repo } });
+
+    writeFileSync(modFile, before.replace('Процедура ОбновитьСводкуНаСервере()', 'Процедура ТекстСводки()'), 'utf8');
+    const stale = runRename(modFile);
+    check('вызов исчезнувшего имени найден',
+      stale.out.includes('qg:BSL-STALE-LOCAL-CALL') && stale.out.includes('ОбновитьСводкуНаСервере'),
+      stale.out.trim().slice(0, 200));
+    // Ровно один: второе вхождение имени стоит внутри строкового литерала. Литералы и
+    // комментарии гасятся до разбора — иначе кандидатом становится текст сообщения.
+    check('вхождение в литерале за вызов не принято',
+      (stale.out.match(/ОШИБКА:/g) || []).length === 1,
+      stale.out.trim().slice(0, 260));
+
+    writeFileSync(
+      modFile,
+      before
+        .replace('Процедура ОбновитьСводкуНаСервере()', 'Процедура ТекстСводки()')
+        .replace('	ОбновитьСводкуНаСервере();', '	ТекстСводки();'),
+      'utf8'
+    );
+    const done = runRename(modFile);
+    check('переименование, доведённое до вызовов, — молчание',
+      done.code === 0 && done.out.includes('verdict=clean'), done.out.trim().slice(0, 200));
+
+    // Файла нет в HEAD — сравнивать не с чем. Это пропуск с причиной, а не чистый результат:
+    // «не смог проверить» и «проверил, чисто» — разные утверждения.
+    const fresh = join(modDir, 'Новый.bsl');
+    writeFileSync(fresh, BOM + 'Процедура Новая()\nКонецПроцедуры\n', 'utf8');
+    const noHistory = runRename(fresh);
+    check('новый файл заявлен пропуском, а не чистым',
+      noHistory.out.includes('skipped') && noHistory.out.includes('no_history'),
+      noHistory.out.trim().slice(0, 200));
+
+    // Смешанный прогон — случай, которого не видно на одном файле. Находка в сравнимом файле
+    // не должна превращаться в `skipped` из-за соседнего нового, а новый не должен уезжать
+    // под вердикт «чисто»: журнал в этом случае объявил бы его проверенным.
+    writeFileSync(modFile, before.replace('Процедура ОбновитьСводкуНаСервере()', 'Процедура ТекстСводки()'), 'utf8');
+    const mixed = run('tools/rename-check.mjs', [modFile, fresh], { env: { CLAUDE_PROJECT_DIR: repo } });
+    check('находка в сравнимом файле не заменяется пропуском',
+      mixed.out.includes('verdict=violation:qg:BSL-STALE-LOCAL-CALL') && mixed.out.includes('reason=no_history, files=1'),
+      mixed.out.trim().slice(0, 260));
+    const journal = readFileSync(join(repo, '.claude', '.state', 'qg-runs.jsonl'), 'utf8')
+      .split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l));
+    const lastRun = [...journal].reverse().find((r) => r.scope === 'stale-local-calls');
+    check('число несравнённых файлов ушло в журнал', lastRun && lastRun.unanalyzed === 1,
+      JSON.stringify(lastRun || null).slice(0, 200));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3011,6 +3202,57 @@ section('Непроанализированные файлы не выдаютс
   });
   check('файл вне корней заявлен not_verified, а не «clean»',
     erfEv.some((l) => l.includes('not_in_analyzer_report')), erfEv.join(' | ').slice(0, 200));
+
+  // Продолжение того же кейса: попадание в orphans — честная запись о непроверенном, но не
+  // проверка. Выгрузка внешней обработки анализируется вторым проходом от своего корня,
+  // который узнаётся по дескриптору рядом с одноимённым каталогом.
+  const epfProj = join(WORK, 'epf-proj');
+  rmSync(epfProj, { recursive: true, force: true });
+  const epfWrap = join(epfProj, 'src', 'xml', 'epf', 'Загрузка цен');
+  const epfModule = join(epfWrap, 'ЗагрузкаЦен', 'Ext', 'ObjectModule.bsl');
+  mkdirSync(dirname(epfModule), { recursive: true });
+  writeFileSync(epfModule, BOM + 'Процедура П()\nКонецПроцедуры\n', 'utf8');
+  writeFileSync(
+    join(epfWrap, 'ЗагрузкаЦен.xml'),
+    '<MetaDataObject><ExternalDataProcessor uuid="x"/></MetaDataObject>\n',
+    'utf8'
+  );
+  check('корень выгрузки внешней обработки найден по дескриптору',
+    analyzer.findStandaloneRoot(epfModule, epfProj) === epfWrap,
+    String(analyzer.findStandaloneRoot(epfModule, epfProj)));
+
+  // Дескриптор объекта конфигурации лежит рядом с одноимённым каталогом точно так же —
+  // отличает выгрузку обработки только тип в дескрипторе. Без проверки типа вторым проходом
+  // разбирался бы каждый справочник конфигурации, причём в отрыве от состава.
+  const cfgProj = join(WORK, 'epf-not-proj');
+  rmSync(cfgProj, { recursive: true, force: true });
+  const catModule = join(cfgProj, 'src', 'cf', 'Catalogs', 'Товары', 'Ext', 'ObjectModule.bsl');
+  mkdirSync(dirname(catModule), { recursive: true });
+  writeFileSync(catModule, BOM + 'Процедура П()\nКонецПроцедуры\n', 'utf8');
+  writeFileSync(
+    join(cfgProj, 'src', 'cf', 'Catalogs', 'Товары.xml'),
+    '<MetaDataObject><Catalog uuid="x"/></MetaDataObject>\n',
+    'utf8'
+  );
+  check('объект конфигурации за выгрузку обработки не принимается',
+    analyzer.findStandaloneRoot(catModule, cfgProj) === null,
+    String(analyzer.findStandaloneRoot(catModule, cfgProj)));
+
+  const std = analyzer.groupByStandaloneRoot([epfModule, catModule], WORK);
+  check('группировка по корням выгрузок отделяет чужие файлы',
+    std.groups.size === 1 && std.rest.length === 1, `groups: ${std.groups.size}, rest: ${std.rest.length}`);
+
+  // Состава конфигурации в выгрузке нет по устройству формата: молчание об этом читалось бы
+  // как «межфайловые связи проверены».
+  const epfEv = analyzer.toEvidence({
+    findings: [],
+    sentinelResult: { status: 'found' },
+    engine: 'bsl-analyzer',
+    version: '0.2.66',
+    standaloneRoots: 1,
+  });
+  check('разбор выгрузки в одиночку оговорён в следе',
+    epfEv.some((l) => l.includes('standalone_artifact_without_configuration')), epfEv.join(' | ').slice(0, 200));
 }
 
 // ---------------------------------------------------------------------------

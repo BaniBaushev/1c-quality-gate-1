@@ -15,6 +15,161 @@ V8_NS = "http://v8.1c.ru/8.1/data/core"
 
 NSMAP = {"f": F_NS, "v8": V8_NS}
 
+# --- Связность Form.xml и модуля формы -------------------------------------
+#
+# Имя обработчика и имя действия команды объявлены в XML, а процедура живёт в модуле: обе
+# стороны связи записаны явно, но не сверяет их никто. Валидатор структуры проверяет, что
+# XML соответствует схеме, — ссылка на несуществующую процедуру схеме соответствует.
+#
+# Замер на живом коде (5 066 форм типовой конфигурации, 60 422 связи): не разрешилось 23,
+# все — в объектах сторонних доработок, в типовых объектах ни одной. Так что ложные
+# срабатывания редки, но не «отсутствуют по построению»: см. оговорку про базовую форму ниже.
+
+BSL_DECL_RE = re.compile(
+    r'(?<![A-Za-zА-Яа-яЁё0-9_])(?:Процедура|Функция)\s+([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)\s*\(',
+    re.IGNORECASE,
+)
+CONFIG_MARKER_XML = "Configuration.xml"
+EXTENSION_MARKER_XML = "<ConfigurationExtensionPurpose"
+
+
+def normalize_name(name):
+    """BSL регистронезависим, а «ё» и «е» различает: гасим регистр, но не букву."""
+    return (name or "").strip().lower()
+
+
+def mask_bsl(source):
+    """Гасит комментарии и строковые литералы, сохраняя длину.
+
+    Без этого объявление, стоящее после строки с `//` внутри литерала (URL, например),
+    терялось бы вместе с остатком строки, а слово из русского текста перед скобкой
+    становилось бы объявлением. Отказ в обе стороны молчаливый.
+    """
+    chars = list(source)
+    i = 0
+    in_string = False
+    while i < len(chars):
+        if not in_string and chars[i] == '/' and i + 1 < len(chars) and chars[i + 1] == '/':
+            while i < len(chars) and chars[i] != '\n':
+                chars[i] = ' '
+                i += 1
+            continue
+        if chars[i] == '"':
+            if in_string and i + 1 < len(chars) and chars[i + 1] == '"':
+                chars[i] = chars[i + 1] = ' '
+                i += 2
+                continue
+            chars[i] = ' '
+            in_string = not in_string
+            i += 1
+            continue
+        if in_string and chars[i] != '\n':
+            chars[i] = ' '
+        i += 1
+    return "".join(chars)
+
+
+def module_declarations(module_path):
+    """Имена процедур и функций модуля. None — файла нет (это не то же, что пустой модуль)."""
+    if not module_path or not os.path.isfile(module_path):
+        return None
+    try:
+        with open(module_path, encoding="utf-8-sig", errors="replace") as fh:
+            source = fh.read()
+    except OSError:
+        return None
+    return {normalize_name(m.group(1)) for m in BSL_DECL_RE.finditer(mask_bsl(source))}
+
+
+def config_root_of(path, marker_extension=None):
+    """Корень конфигурации или расширения над файлом. `marker_extension`: True/False/None."""
+    current = os.path.dirname(os.path.abspath(path))
+    for _ in range(15):
+        marker = os.path.join(current, CONFIG_MARKER_XML)
+        if os.path.isfile(marker):
+            head = ""
+            try:
+                with open(marker, encoding="utf-8-sig", errors="replace") as fh:
+                    head = fh.read(8192)
+            except OSError:
+                pass
+            is_extension = EXTENSION_MARKER_XML in head
+            if marker_extension is None or is_extension == marker_extension:
+                return current
+            return None
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+    return None
+
+
+def main_config_root(start, depth=4):
+    """Ищет корень ОСНОВНОЙ конфигурации в проекте — обход сверху, как у analyzer-run.mjs."""
+    skip = {".git", ".claude", "node_modules", "build", "out", "dist", ".qg-analyzer"}
+    stack = [(os.path.abspath(start), 0)]
+    while stack:
+        current, level = stack.pop()
+        if level > depth:
+            continue
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        marker = os.path.join(current, CONFIG_MARKER_XML)
+        if os.path.isfile(marker):
+            head = ""
+            try:
+                with open(marker, encoding="utf-8-sig", errors="replace") as fh:
+                    head = fh.read(8192)
+            except OSError:
+                pass
+            if EXTENSION_MARKER_XML not in head:
+                return current
+            continue  # внутрь корня не спускаемся
+        for entry in entries:
+            if entry.is_dir() and entry.name not in skip and not entry.name.startswith("."):
+                stack.append((entry.path, level + 1))
+    return None
+
+
+def base_form_declarations(form_path):
+    """Объявления модуля БАЗОВОЙ формы для формы расширения.
+
+    Зачем. Модуль формы расширения сливается с модулем расширяемой формы, и обработчик,
+    названный в XML расширения, может быть объявлен в базовом модуле — законно. Замер:
+    1 такой случай из 9 находок на заимствованных формах живого проекта. Без этого разрешения
+    находка была бы ложной и блокирующей.
+
+    Возвращает (множество имён, состояние): состояние `resolved` | `no_main_configuration`.
+    """
+    ext_root = config_root_of(form_path, marker_extension=True)
+    if not ext_root:
+        return set(), "resolved"  # форма не в расширении — базовой формы нет по определению
+    candidates = []
+    try:
+        from _qg_journal import project_root
+
+        candidates.append(project_root(os.path.dirname(os.path.abspath(form_path))))
+    except ImportError:
+        pass
+    walk_up = os.path.abspath(ext_root)
+    for _ in range(3):
+        walk_up = os.path.dirname(walk_up)
+        candidates.append(walk_up)
+
+    main_root = None
+    for candidate in candidates:
+        main_root = main_config_root(candidate)
+        if main_root:
+            break
+    if not main_root:
+        return set(), "no_main_configuration"
+    relative = os.path.relpath(os.path.dirname(os.path.abspath(form_path)), ext_root)
+    declared = module_declarations(os.path.join(main_root, relative, "Form", "Module.bsl"))
+    return (declared or set()), "resolved"
+
+
 KNOWN_INVALID_TYPES = {
     'FormDataStructure', 'FormDataCollection', 'FormDataTree',
     'FormDataTreeItem', 'FormDataCollectionItem',
@@ -749,6 +904,74 @@ def main():
             else:
                 report_ok('12. Types: no type values to check')
 
+    # --- Check 13: Form binding — имена из XML разрешаются в модуле формы ---
+    #
+    # Уровень Major без блокировки, и это измерено, а не предположено. Опыт на 8.3.27.1688
+    # (файловая база, внешняя обработка, `ENTERPRISE /Execute`): форма с повисшей привязкой
+    # на несрабатывающем событии открывается и работает ровно как контрольная — платформа не
+    # разрешает привязки при создании формы. Дефект настоящий (XML называет процедуру,
+    # которой нет ни в модуле формы, ни в модуле базовой), но он спит до наступления события,
+    # и блокировать им коммит значило бы приравнять его к сломанной сборке.
+    binding_ids = []
+    binding_note = None
+    if not stopped:
+        module_path = os.path.join(os.path.dirname(os.path.abspath(form_path)), "Form", "Module.bsl")
+        declared = module_declarations(module_path)
+        base_declared, base_state = base_form_declarations(form_path)
+        known = set(declared or set()) | set(base_declared)
+
+        base_nodes = set()
+        base_form_subtree = root.find(f"{{{F_NS}}}BaseForm")
+        if base_form_subtree is not None:
+            base_nodes = {id(node) for node in base_form_subtree.iter()}
+
+        handler_missing = 0
+        action_missing = 0
+        binding_checked = 0
+
+        def resolves(name):
+            return normalize_name(name) in known
+
+        for evt in root.iter(f"{{{F_NS}}}Event"):
+            if id(evt) in base_nodes:
+                continue
+            handler = (evt.text or "").strip()
+            if not handler:
+                continue  # пустой обработчик — это Check 7, здесь не дублируем
+            binding_checked += 1
+            if declared is not None and not resolves(handler):
+                report_warn(
+                    f"[Binding] event '{evt.get('name', '')}': handler '{handler}' not found in form module"
+                )
+                handler_missing += 1
+
+        for act in root.iter(f"{{{F_NS}}}Action"):
+            if id(act) in base_nodes:
+                continue
+            action = (act.text or "").strip()
+            if not action:
+                continue  # пустое действие — это Check 8
+            binding_checked += 1
+            if declared is not None and not resolves(action):
+                report_warn(f"[Binding] command action '{action}' not found in form module")
+                action_missing += 1
+
+        if handler_missing:
+            binding_ids.append("qg:XML-FORM-HANDLER-MISSING")
+        if action_missing:
+            binding_ids.append("qg:XML-FORM-ACTION-MISSING")
+
+        # Разные причины молчания различаются намеренно: модуля нет — проверять нечем;
+        # основной конфигурации нет — имена базовой формы неразрешимы, и находка была бы
+        # ложной. Оба случая заявляются, а не выдаются за чистый результат.
+        if declared is None and binding_checked:
+            binding_note = ("skipped", "form_module_absent")
+        elif base_state == "no_main_configuration" and base_form_subtree is not None:
+            binding_note = ("not_verified", "main_configuration_absent")
+
+        if not binding_ids and binding_checked and declared is not None:
+            report_ok(f"Form binding: {binding_checked} names resolved in form module")
+
     # --- Finalize ---
     checks = ok_count + errors + warnings
     if errors == 0 and warnings == 0 and not detailed:
@@ -761,9 +984,43 @@ def main():
     print(result)
 
     try:
-        from _qg_journal import emit_evidence
+        from _qg_journal import emit_evidence, record_run
 
-        emit_evidence("tools/xml/form-validate.py", errors)
+        extra = []
+        # Своё имя проверки, а не общее `structure-validation`: под тем именем в реестре
+        # закреплён другой инструмент, и сверка покрытия закрывалась бы прогоном не того.
+        #
+        # Два вида молчания различаются намеренно. Отсутствие основной конфигурации —
+        # измерение `cross-config-resolution` из закрытого списка: имена базовой формы
+        # неразрешимы в принципе. Отсутствие модуля формы измерением не является вовсе, это
+        # пропуск самой проверки; заяви его измерением — и запись закрывала бы утверждение о
+        # разрешении имён, которого никто не делал.
+        if binding_note:
+            kind, reason = binding_note
+            extra.append(
+                f"[qg not_verified: dimension=cross-config-resolution, reason={reason}]"
+                if kind == "not_verified"
+                else f"[qg skipped: layer=xml, scope=form-binding, reason={reason}]"
+            )
+            # Прогон отмечается в любом исходе: инструмент отработал, и молчание об этом
+            # неотличимо от строки, написанной вместо запуска.
+            record_run(
+                "form-binding",
+                "tools/xml/form-validate.py",
+                verdict=reason,
+                files=[form_path],
+            )
+        else:
+            ids = ",".join(binding_ids) if binding_ids else "qg:XML-FORM-HANDLER-MISSING,qg:XML-FORM-ACTION-MISSING"
+            verdict = f"violation:{binding_ids[0]}" if binding_ids else "clean"
+            extra.append(f"[qg applied: layer=xml, scope=form-binding, ids=[{ids}], verdict={verdict}]")
+            record_run(
+                "form-binding",
+                "tools/xml/form-validate.py",
+                verdict="violation" if binding_ids else "clean",
+                files=[form_path],
+            )
+        emit_evidence("tools/xml/form-validate.py", errors, extra=extra)
     except ImportError:
         pass
 

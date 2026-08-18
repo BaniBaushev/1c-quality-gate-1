@@ -33,7 +33,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve, relative, sep, isAbsolute } from 'node:path';
+import { join, dirname, resolve, relative, sep, isAbsolute, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -198,6 +198,59 @@ export function groupByConfigRoot(files, stopAt = projectRoot()) {
     groups.get(root).push(resolve(f));
   }
   return { groups, orphans };
+}
+
+/** Типы дескриптора, по которым узнаётся выгрузка внешней обработки или отчёта. */
+const STANDALONE_MARKERS = ['<ExternalDataProcessor', '<ExternalReport'];
+
+/**
+ * Находит корень выгрузки внешней обработки или отчёта, которому принадлежит файл.
+ *
+ * Зачем. `findConfigRoot` ищет `Configuration.xml`, а в выгрузке внешней обработки его нет
+ * и быть не может. Дальше файл уходил либо в `orphans`, либо мимо `[source]` сгенерированного
+ * конфига — и весь класс кода внешних обработок не проходил статический анализ ни в одном
+ * проекте. Гейт про это честно писал `not_verified: not_in_analyzer_report`, но 29 диагностик,
+ * которые прямой прогон движка даёт по одной такой обработке, до отчёта не доходили.
+ *
+ * Признак корня: каталог, где рядом с подкаталогом `X` лежит дескриптор `X.xml` с типом
+ * `ExternalDataProcessor` или `ExternalReport`. Именно этот каталог движок принимает
+ * ключом `-s`; вложенность файла внутри `X` значения не имеет.
+ */
+export function findStandaloneRoot(file, stopAt = projectRoot()) {
+  let dir = dirname(resolve(file));
+  const stop = resolve(stopAt);
+  for (;;) {
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    if (!dir.startsWith(stop)) return null;
+    const descriptor = join(parent, `${basename(dir)}.xml`);
+    if (existsSync(descriptor)) {
+      let head = '';
+      try {
+        head = readFileSync(descriptor, 'utf8').slice(0, 4096);
+      } catch {
+        /* нечитаемый дескриптор корнем не признаём: это не наша ошибка */
+      }
+      if (STANDALONE_MARKERS.some((m) => head.includes(m))) return parent;
+    }
+    dir = parent;
+  }
+}
+
+/** Группирует файлы по корням выгрузок внешних обработок; остальные возвращаются в `rest`. */
+export function groupByStandaloneRoot(files, stopAt = projectRoot()) {
+  const groups = new Map();
+  const rest = [];
+  for (const f of files) {
+    const root = findStandaloneRoot(f, stopAt);
+    if (!root) {
+      rest.push(f);
+      continue;
+    }
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(resolve(f));
+  }
+  return { groups, rest };
 }
 
 /**
@@ -471,6 +524,7 @@ export function toEvidence({
   unparsed = new Map(),
   resolution = null,
   unanalyzed = [],
+  standaloneRoots = 0,
 }) {
   const lines = [];
   const stamp = version ? `${engine}@${version}` : engine;
@@ -495,6 +549,15 @@ export function toEvidence({
   // отсутствие находок по межфайловым связям читается как их отсутствие в коде.
   if (resolution === 'extension-only') {
     lines.push('[qg not_verified: dimension=cross-config-resolution, reason=main_configuration_absent]');
+  }
+  // Выгрузка внешней обработки разбирается сама по себе всегда: состава конфигурации в ней нет
+  // по устройству формата. Своё имя у оговорки, а не общее с расширением, потому что причина
+  // разная: у расширения основную конфигурацию можно доложить в проект, у обработки — нет.
+  else if (standaloneRoots) {
+    lines.push(
+      '[qg not_verified: dimension=cross-config-resolution, reason=standalone_artifact_without_configuration, ' +
+        `roots=${standaloneRoots}]`
+    );
   }
   const codes = [...new Set(findings.map((f) => f.code))].sort();
   if (codes.length === 0) {
@@ -691,6 +754,41 @@ async function main(argv) {
     }
   }
 
+  // Внешние обработки и отчёты: их выгрузка не содержит `Configuration.xml`, поэтому ни одна
+  // из веток выше их не видит — ни `[source]` сгенерированного конфига, ни группировка по
+  // корням. Догоняем вторым проходом по корню каждой выгрузки и только по тем файлам, которых
+  // движок ещё не встречал: повторный разбор уже проверенного файла удвоил бы находки.
+  const notSeenYet = args.changed.filter((f) => !seen.has(toRelative(resolve(f), root, root)));
+  const standalone = groupByStandaloneRoot(notSeenYet, root);
+  for (const [artifactRoot, files] of standalone.groups) {
+    const raw =
+      engine === 'bsl-ls'
+        ? runBslLs({ jar, root: artifactRoot, configPath })
+        : runBslAnalyzer({ binary, root: artifactRoot, changed: files, configPath });
+    if (!raw.ok) {
+      process.stderr.write(
+        `Анализатор завершился неуспешно на выгрузке ${relative(root, artifactRoot).split(sep).join('/')}
+` +
+          `${raw.stderr.slice(0, 500)}
+`
+      );
+      return cfg.required ? 2 : 1;
+    }
+    const norm =
+      engine === 'bsl-ls'
+        ? normalizeBslLs(raw.stdout, { root: artifactRoot, base: root, only: files })
+        : normalizeBslAnalyzer(raw.stdout, { root: artifactRoot, base: root });
+    // Имена основной конфигурации и БСП в выгрузке внешней обработки отсутствуют физически —
+    // ровно как у расширения, разобранного в одиночку. Понижаем те же коды по той же причине:
+    // «не удалось разрешить» здесь относится к области анализа, а не к коду.
+    for (const f of norm.findings) if (UNRESOLVED_WITHOUT_MAIN.has(f.code)) f.severity = 'info';
+    findings.push(...norm.findings);
+    for (const [k, v] of norm.metrics) metrics.set(k, v);
+    for (const [k, v] of norm.unparsed) unparsed.set(k, v);
+    for (const f of norm.seen || []) seen.add(f);
+  }
+  const standaloneRoots = standalone.groups.size;
+
   // Файл считается проверенным, только если движок его видел. Файлы вне корня конфигурации
   // (`orphans`) сюда попадают тем же путём — отдельно их перечислять не нужно.
   const unanalyzed = args.changed
@@ -707,7 +805,7 @@ async function main(argv) {
     }
   }
 
-  const evidence = toEvidence({ findings, sentinelResult, engine, version, unparsed, resolution, unanalyzed });
+  const evidence = toEvidence({ findings, sentinelResult, engine, version, unparsed, resolution, unanalyzed, standaloneRoots });
 
   // Отметка о прогоне ставится здесь, а не в `toEvidence`: та лишь строит строки и вызывается
   // кем угодно, включая тесты, — журнал же обязан значить «инструмент отработал по этим

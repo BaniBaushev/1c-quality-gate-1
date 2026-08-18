@@ -128,6 +128,8 @@ node "$QG/tools/analyzer-run.mjs" --changed <файл> [--changed <файл> ...
 ```bash
 node "$QG/tools/query-lint.mjs" <файл.bsl|файл.xml> [<файл> ...]
 node "$QG/tools/bsl-lint.mjs" <файл.bsl> [<файл.bsl> ...]
+node "$QG/tools/rename-check.mjs" <файл.bsl> [<файл.bsl> ...]
+python "$QG/tools/xml/form-validate.py" -Path <Form.xml>   # правился модуль формы
 ```
 
 `query-lint` читает и XML-носители запросов — `<query>` схем компоновки данных и
@@ -142,6 +144,7 @@ node "$QG/tools/bsl-lint.mjs" <файл.bsl> [<файл.bsl> ...]
 | `qg:QRY-TOP-WITHOUT-ORDER` | 🟡 | `ПЕРВЫЕ N` без `УПОРЯДОЧИТЬ ПО` — набор строк недетерминирован | `references/bsl-anti-patterns.md` п. 5 |
 | `qg:BSL-TXN-IN-HANDLER` | 🟠 | своя `НачатьТранзакцию` внутри обработчика, который платформа уже выполняет в транзакции (#std783 п. 1.4) | `references/bsl-anti-patterns.md` п. 8б |
 | `qg:BSL-ENUM-STRING-ASSIGN` | 🟠 | примитив в поле строго ссылочного типа: сборка молчит, падает при записи | `references/bsl-anti-patterns.md` п. 8в |
+| `qg:BSL-STALE-LOCAL-CALL` | 🔴 | вызов метода, чьё объявление было в HEAD и исчезло в правке: переименование не доведено до точек вызова | `references/bsl-anti-patterns.md` п. 8г |
 | `qg:BSL-UNBOUNDED-STRING-COLUMN` | 🟠 | строковая колонка без квалификатора у таблицы, уходящей в параметр запроса (#std432 п. 3.1) | `references/ai-antipatterns.md`, `qg:AI-16` |
 | `qg:BSL-REF-DOT-ACCESS` | 🔴 / 🟠 | обращение к реквизиту ссылки через точку: объект читается целиком ради одного поля (#std437). Ссылочность доказывается присваиванием в методе или типом параметра из описания #std453 (🟠 — описание могло устареть), либо именем на «Ссылка» | `references/bsl-anti-patterns.md` п. 2 |
 

@@ -874,4 +874,6 @@ function main(argv) {
   return errors ? 2 : warns ? 1 : 0;
 }
 
-process.exit(main(process.argv));
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('bsl-lint.mjs')) {
+  process.exit(main(process.argv));
+}

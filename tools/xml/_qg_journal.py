@@ -47,7 +47,7 @@ def project_root(start=None):
     return here
 
 
-def emit_evidence(tool, errors, files=None, scope="structure-validation", sign="qg:XML-STRUCT"):
+def emit_evidence(tool, errors, files=None, scope="structure-validation", sign="qg:XML-STRUCT", extra=None):
     """Печатает готовую запись следа и отмечает прогон в журнале.
 
     Общий хвост для всех валидаторов XML: контур переносит эту строку в отчёт дословно.
@@ -67,6 +67,10 @@ def emit_evidence(tool, errors, files=None, scope="structure-validation", sign="
     print("## quality evidence")
     print("")
     print(f"[qg applied: layer=xml, scope={scope}, ids=[{sign}], verdict={verdict}]")
+    # Второй проверке того же инструмента нужен свой заголовок не больше, чем первой: контур
+    # переносит блок целиком, и разорванный на два блока след читается как два прогона.
+    for line in extra or []:
+        print(line)
 
 
 def target_from_argv(argv=None):

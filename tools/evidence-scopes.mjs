@@ -97,6 +97,16 @@ export const SCOPES = {
     granularity: 'files',
     applies: ['.bsl', '.os']
   },
+  // Инверсия проверки разрешения имён: сравнение с версией файла в HEAD вместо словаря
+  // глобального контекста. Имя, которое модуль объявлял до правки, платформенным глобальным
+  // быть не могло — отсюда отсутствие словаря и отсутствие ложных находок на нём.
+  'stale-local-calls': {
+    layer: 'code',
+    tool: 'tools/rename-check.mjs',
+    about: 'голый вызов метода, объявление которого исчезло из модуля в этой правке',
+    granularity: 'files',
+    applies: ['.bsl', '.os']
+  },
   'query-in-loop': {
     layer: 'code',
     tool: null,
@@ -157,6 +167,19 @@ export const SCOPES = {
     layer: 'xml',
     tool: 'tools/xml/meta-validate.py',
     about: 'структура файла метаданных: обязательные узлы, порядок, типы',
+    granularity: 'files',
+    applies: ['.xml'],
+    coverage: 'advisory'
+  },
+  // Связность объявлений формы: имя обработчика и имя действия команды записаны в XML, а
+  // процедура живёт в модуле. Отдельное имя от `structure-validation` не бухгалтерия: под тем
+  // именем в реестре закреплён `meta-validate.py`, и сверка покрытия закрывалась бы прогоном
+  // не того инструмента. Покрытие — advisory: валидатор относится к `Form.xml`, а не к любому
+  // XML выгрузки.
+  'form-binding': {
+    layer: 'xml',
+    tool: 'tools/xml/form-validate.py',
+    about: 'обработчик события и действие команды разрешаются в модуле формы',
     granularity: 'files',
     applies: ['.xml'],
     coverage: 'advisory'
@@ -245,6 +268,8 @@ export const QG_IDS = {
   'qg:XML-STRUCT': { tool: 'tools/xml/meta-validate.py' },
   'qg:XML-ORPHAN': { tool: 'tools/xml/orphan-check.mjs' },
   'qg:XML-UUID-DUP': { tool: 'tools/xml/uuid-unique.mjs' },
+  'qg:XML-FORM-HANDLER-MISSING': { tool: 'tools/xml/form-validate.py' },
+  'qg:XML-FORM-ACTION-MISSING': { tool: 'tools/xml/form-validate.py' },
   'qg:SKD-PARAM-VT-COLLISION': { tool: 'tools/xml/skd-validate.py' },
   'qg:SKD-GROUP-NONAGGREGATE-FIELD': { tool: 'tools/xml/skd-validate.py' },
   'qg:SKD-GROUP-EMPTY-SELECTION': { tool: 'tools/xml/skd-validate.py' },
@@ -257,6 +282,7 @@ export const QG_IDS = {
   'qg:BSL-ENUM-STRING-ASSIGN': { tool: 'tools/bsl-lint.mjs' },
   'qg:BSL-UNBOUNDED-STRING-COLUMN': { tool: 'tools/bsl-lint.mjs' },
   'qg:BSL-REF-DOT-ACCESS': { tool: 'tools/bsl-lint.mjs' },
+  'qg:BSL-STALE-LOCAL-CALL': { tool: 'tools/rename-check.mjs' },
 
   // --- код, модельные ------------------------------------------------------
   'qg:QRY-EXECUTED': { tool: null },

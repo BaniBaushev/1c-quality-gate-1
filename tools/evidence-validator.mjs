@@ -615,6 +615,25 @@ export function validate(text, { gate = false, root = null, session = null } = {
     );
   }
 
+  // То же требование для остальных инструментов, которые считают непроверенные файлы. Правило
+  // общее намеренно: правило под одно имя (`static-analysis` выше) пришлось бы дописывать на
+  // каждый новый инструмент, а пока оно не дописано — молчание о непроверенном снова проходит.
+  for (const scope of new Set(fresh.filter((r) => Number(r.unanalyzed) > 0).map((r) => r.scope))) {
+    if (scope === 'static-analysis') continue; // разобрано выше, со своим текстом
+    const last = [...fresh].reverse().find((r) => r.scope === scope);
+    const declared = records.some(
+      (r) => (r.type === 'skipped' || r.type === 'not_verified') && String(r.fields.scope || '') === scope
+    );
+    if (!declared) {
+      add(
+        'error',
+        0,
+        `${last.tool || scope} не проверил ${last.unanalyzed} из переданных файлов, а в следе это не ` +
+          `заявлено: нужна запись [qg skipped: ... scope=${scope}, reason=..., files=N] — её печатает сам инструмент`
+      );
+    }
+  }
+
   const errors = problems.filter((p) => p.severity === 'error').length;
   return { records, problems, exitCode: errors ? 2 : problems.length ? 1 : 0 };
 }

@@ -197,10 +197,12 @@ node "$QG/tools/config.mjs" show
 | `static-analysis` | `tools/analyzer-run.mjs` |
 | `query-alias-shadowing`, `query-top-order` | `tools/query-lint.mjs` (`.bsl` и `.xml`) |
 | `transaction-nesting`, `enum-string-assign`, `unbounded-string-column`, `attribute-access` | `tools/bsl-lint.mjs` |
+| `stale-local-calls` | `tools/rename-check.mjs` |
 | `file-encoding` | `tools/hygiene-check.mjs` |
 | `registration-check` | `tools/xml/orphan-check.mjs` |
 | `uuid-uniqueness` | `tools/xml/uuid-unique.mjs` |
 | `structure-validation` | `tools/xml/meta-validate.py` |
+| `form-binding` | `tools/xml/form-validate.py` |
 
 Остальные проверки (архитектурные признаки, разбор стандартов, верификация API) инструмента
 не имеют: журнала для них не требуется. Полный словарь имён — `tools/evidence-scopes.mjs`;
@@ -254,6 +256,11 @@ node "$QG/tools/config.mjs" show
 Отчёт для человека — находки по severity (🔴 Critical / 🟠 Major / 🟡 Minor) в формате
 контура. Ниже, в секции `## quality evidence`, — машиночитаемый след: одна строка на
 проверку. Формат, полный список причин и правила валидатора — `references/evidence-format.md`.
+
+**Каждая запись `not_verified` повторяется в человекочитаемой части одной фразой.** «Ошибок: 0»
+рядом с невидимым `not_verified` читается как «проверено» — измерено на живом разборе: так
+дважды возникла ложная уверенность в проверенности запроса. Фраза короткая и по делу:
+«текст запроса статически чист; выполнимость не проверялась — платформы нет».
 
 Обязательный минимум следа: одна запись `scope` (с полем `config` из шага 1), одна
 `sentinel`, по записи от каждого запущенного или пропущенного контура, и — если

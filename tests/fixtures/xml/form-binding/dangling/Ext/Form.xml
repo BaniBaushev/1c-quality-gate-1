@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Events>
+		<Event name="OnOpen">ПриОткрытии</Event>
+	</Events>
+	<ChildItems>
+		<Button name="КнопкаОбновить" id="4">
+			<CommandName>Form.Command.Обновить</CommandName>
+			<ExtendedTooltip name="КнопкаОбновитьРасширеннаяПодсказка" id="5"/>
+		</Button>
+	</ChildItems>
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>
+	<Attributes>
+		<Attribute name="Объект" id="1">
+			<Type>
+				<v8:Type>cfg:CatalogObject.QG_Образец</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+			<SavedData>true</SavedData>
+		</Attribute>
+	</Attributes>
+	<Commands>
+		<Command name="Обновить" id="1000001">
+			<Action>ОбновитьНаСервере</Action>
+		</Command>
+	</Commands>
+</Form>
