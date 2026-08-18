@@ -138,7 +138,7 @@ node "$QG/tools/bsl-lint.mjs" <файл.bsl> [<файл.bsl> ...]
 
 | Признак | Sev | Что ловит | Разбор |
 |---|---|---|---|
-| `qg:QRY-ALIAS-SHADOWS-FIELD` | 🔴 / 🟠 | псевдоним источника совпал с именем колонки временной таблицы пакета: «Неоднозначное поле». Разыменование такого имени — 🔴, коллизия без обращения через точку — 🟠 | `references/bsl-query-reference.md` |
+| `qg:QRY-ALIAS-SHADOWS-FIELD`, `qg:QRY-ALIAS-SHADOWS-NESTED-TABLE` | 🔴 / 🟠 | псевдоним совпал с именем колонки ВТ пакета или табличной части, чей владелец в той же ветке: «Неоднозначное поле». Разыменование — 🔴, без обращения через точку — 🟠 | `references/bsl-query-reference.md` |
 | `qg:QRY-TOP-WITHOUT-ORDER` | 🟡 | `ПЕРВЫЕ N` без `УПОРЯДОЧИТЬ ПО` — набор строк недетерминирован | `references/bsl-anti-patterns.md` п. 5 |
 | `qg:BSL-TXN-IN-HANDLER` | 🟠 | своя `НачатьТранзакцию` внутри обработчика, который платформа уже выполняет в транзакции (#std783 п. 1.4) | `references/bsl-anti-patterns.md` п. 8б |
 | `qg:BSL-ENUM-STRING-ASSIGN` | 🟠 | примитив в поле строго ссылочного типа: сборка молчит, падает при записи | `references/bsl-anti-patterns.md` п. 8в |

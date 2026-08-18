@@ -60,6 +60,15 @@ export const SCOPES = {
     granularity: 'files',
     applies: ['.bsl', '.os', '.xml']
   },
+  // Отдельный скоуп, а не строка внутри `query-alias-shadowing`: источник имён другой
+  // (текст запроса против колонок пакета), и вердикт по одному ничего не говорит о другом.
+  'query-alias-vs-nested-table': {
+    layer: 'code',
+    tool: 'tools/query-lint.mjs',
+    about: 'псевдоним источника затеняет имя табличной части, чей владелец соединён в той же ветке',
+    granularity: 'files',
+    applies: ['.bsl', '.os', '.xml']
+  },
   'query-top-order': {
     layer: 'code',
     tool: 'tools/query-lint.mjs',
@@ -242,6 +251,7 @@ export const QG_IDS = {
 
   // --- код, инструментальные -----------------------------------------------
   'qg:QRY-ALIAS-SHADOWS-FIELD': { tool: 'tools/query-lint.mjs' },
+  'qg:QRY-ALIAS-SHADOWS-NESTED-TABLE': { tool: 'tools/query-lint.mjs' },
   'qg:QRY-TOP-WITHOUT-ORDER': { tool: 'tools/query-lint.mjs' },
   'qg:BSL-TXN-IN-HANDLER': { tool: 'tools/bsl-lint.mjs' },
   'qg:BSL-ENUM-STRING-ASSIGN': { tool: 'tools/bsl-lint.mjs' },
