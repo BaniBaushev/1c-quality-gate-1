@@ -17,7 +17,7 @@
  *   node analyzer-bootstrap.mjs [--force] [--verify]
  */
 
-import { createWriteStream, createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, chmodSync, statSync } from 'node:fs';
+import { createWriteStream, createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, chmodSync, statSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -157,6 +157,55 @@ export async function install(manifest, { root = dataRoot(), force = false, log 
   writeMarker(manifest, root, { sha256: actual, size: statSync(finalPath).size, installedFrom: url });
   log(`Готово: ${finalPath}`);
   return { ok: true, path: finalPath, downloaded: true };
+}
+
+/**
+ * Принимает уже лежащий на диске бинарник как свою установку.
+ *
+ * Зачем. Установка лаунчера у пользователя нередко держит ровно ту версию, что закреплена
+ * манифестом: качать те же 63 МБ заново незачем. Но ССЫЛАТЬСЯ на чужой файл нельзя — лаунчер
+ * обновляет его сам, и закрепление протекает при первом же его самообновлении. Поэтому файл
+ * копируется под наш контроль.
+ *
+ * Сумма считается у КОПИИ, а не у источника: между проверкой источника и копированием лаунчер
+ * успел бы подменить файл, и проверка доказывала бы что-то о другом байтовом наборе. Порядок
+ * тот же, что при скачивании: копия во временный файл, сверка, переименование, маркер
+ * последним. В маркер уходит путь источника — по нему потом видно, что установка принята, а
+ * не скачана.
+ */
+export async function adopt(manifest, sourcePath, { root = dataRoot(), log = () => {} } = {}) {
+  const key = targetKey();
+  const target = manifest.targets[key];
+  if (!target) return { ok: false, reason: 'unsupported_platform', platform: key };
+  if (!sourcePath || !existsSync(sourcePath)) return { ok: false, reason: 'source_missing' };
+
+  const dir = installDir(manifest, root);
+  mkdirSync(dir, { recursive: true });
+  const finalPath = binaryPath(manifest, root);
+  const tmpPath = `${finalPath}.download`;
+
+  try {
+    rmSync(tmpPath, { force: true });
+    copyFileSync(sourcePath, tmpPath);
+  } catch (e) {
+    // На Windows лаунчер может держать свой файл открытым. Это не дефект и не повод падать:
+    // вызывающий просто скачает бинарник обычным путём.
+    rmSync(tmpPath, { force: true });
+    return { ok: false, reason: 'copy_failed', error: String(e.message || e) };
+  }
+
+  const actual = await sha256(tmpPath);
+  if (actual !== target.sha256) {
+    rmSync(tmpPath, { force: true });
+    return { ok: false, reason: 'checksum_mismatch', actual, expected: target.sha256 };
+  }
+
+  rmSync(finalPath, { force: true });
+  renameSync(tmpPath, finalPath);
+  if (process.platform !== 'win32') chmodSync(finalPath, 0o755);
+  writeMarker(manifest, root, { sha256: actual, size: statSync(finalPath).size, installedFrom: sourcePath });
+  log(`Принята существующая установка ${manifest.version}: ${sourcePath}`);
+  return { ok: true, path: finalPath, adopted: true };
 }
 
 /** Маркер готовности пишется последним и только после сверки суммы. */

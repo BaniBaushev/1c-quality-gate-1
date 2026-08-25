@@ -37,7 +37,14 @@ import { join, dirname, resolve, relative, sep, isAbsolute, basename } from 'nod
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readManifest, installed as bootstrapInstalled, install as installAnalyzer } from './analyzer-bootstrap.mjs';
+import {
+  readManifest,
+  installed as bootstrapInstalled,
+  install as installAnalyzer,
+  adopt as adoptAnalyzer,
+  sha256,
+  targetKey,
+} from './analyzer-bootstrap.mjs';
 import { DEFAULTS, readConfig, versionSuffix } from './config.mjs';
 import { resolveProjectRoot as resolveRoot } from './project-root.mjs';
 import { recordRun } from './run-journal.mjs';
@@ -254,32 +261,43 @@ export function groupByStandaloneRoot(files, stopAt = projectRoot()) {
 }
 
 /**
- * Находит исполняемый файл bsl-analyzer.
+ * Возвращает бинарник, про который УЖЕ известно, что он закреплён: либо указанный
+ * пользователем явно, либо свою установку, версия которой закреплена манифестом и сверена
+ * по SHA-256.
  *
- * Версионированный файл (`bsl-analyzer-0.2.66`) на Windows лежит БЕЗ расширения и через
- * spawn не запускается — CreateProcess его не видит (проверено: ENOENT). Поэтому берём
- * рабочий бинарник, а версию не угадываем по имени, а СПРАШИВАЕМ у него самого и сверяем
- * с закреплённой. Лаунчер (`bsl-analyzer.exe` рядом с местом установки) не используем
- * никогда: он умеет молча обновиться посреди задачи, и гейт перестаёт быть воспроизводимым.
+ * Чужую установку эта функция не отдаёт принципиально. Раньше отдавала — и закрепление
+ * версии не работало: манифест поднимали до новой версии, а гейт продолжал молча гонять то,
+ * что держит лаунчер. Разбор чужой установки живёт в `ensureBslAnalyzer`, где её сначала
+ * сверяют с манифестом.
  */
 export function resolveBslAnalyzer(cfg) {
   if (cfg.binary) return existsSync(cfg.binary) ? cfg.binary : null;
 
-  // Первым делом — своя установка в каталоге данных плагина: её версия закреплена манифестом
-  // и сверена по SHA-256. Установку лаунчера берём следом, чтобы не заставлять скачивать
-  // шестьдесят мегабайт того, что у пользователя уже есть.
   try {
     const own = bootstrapInstalled(readManifest());
     if (own) return own;
   } catch {
     /* манифеста нет или он повреждён — работаем как раньше */
   }
+  return null;
+}
 
-  const dir = join(homedir(), '.bsl-analyzer', 'bin');
+/** Каталог установки лаунчера. Отдельной функцией — чтобы тест мог подставить свой. */
+export function launcherDir() {
+  return join(homedir(), '.bsl-analyzer', 'bin');
+}
+
+/**
+ * Бинарник в установке лаунчера или null.
+ *
+ * Версионированный файл (`bsl-analyzer-0.2.66`) на Windows лежит БЕЗ расширения и через
+ * spawn не запускается — CreateProcess его не видит (проверено: ENOENT). Поэтому там берём
+ * рабочий `bsl-analyzer-app.exe`, а на прочих системах годится и версионированный.
+ */
+export function launcherCandidate(dir = launcherDir()) {
   if (!existsSync(dir)) return null;
   const app = join(dir, IS_WINDOWS ? 'bsl-analyzer-app.exe' : 'bsl-analyzer-app');
   if (existsSync(app)) return app;
-  // На не-Windows версионированный файл запускается напрямую — там он и есть лучший выбор.
   const versioned = readdirSync(dir)
     .filter((n) => /^bsl-analyzer-\d/.test(n))
     .sort()
@@ -293,11 +311,22 @@ export function resolveBslAnalyzer(cfg) {
  * Автоустановка включена по умолчанию: плагин публичный, и шаг «скачайте бинарник сами»
  * отсекает тех, кто мог бы им пользоваться. Отключается `analyzer.autoInstall: false` —
  * тогда отсутствие анализатора честно уходит в `skipped`, как и раньше.
+ *
+ * Чужая установка (лаунчер автора) годится, только если это ровно закреплённый бинарник, и
+ * проверяется это в два шага. Сначала дешёвый отсев по номеру версии (`--version`, 15 мс):
+ * несовпадение — штатная ситуация, лаунчер живёт своей жизнью. Потом сверка SHA-256 (71 мс
+ * на 63 МБ): совпал номер, но не совпали байты — ситуация уже подозрительная, и такой файл
+ * не берётся вовсе. Причины разделены намеренно: слить их в одно сообщение значит потерять
+ * разницу между «нормально» и «странно».
+ *
+ * При включённой автоустановке принятый файл КОПИРУЕТСЯ в каталог данных (см. `adopt`), а не
+ * используется по месту: лаунчер обновляет свой файл сам, и ссылка на него протухла бы при
+ * первом же его самообновлении. При выключенной копировать нечего — пользователь запретил
+ * установку, — поэтому сверенный файл берётся по месту.
  */
-export async function ensureBslAnalyzer(cfg, log = () => {}) {
+export async function ensureBslAnalyzer(cfg, log = () => {}, { launcherPath } = {}) {
   const found = resolveBslAnalyzer(cfg);
   if (found) return { path: found, installed: false };
-  if (!cfg.autoInstall) return { path: null, installed: false, reason: 'autoinstall_disabled' };
 
   let manifest;
   try {
@@ -306,10 +335,34 @@ export async function ensureBslAnalyzer(cfg, log = () => {}) {
     return { path: null, installed: false, reason: 'manifest_missing' };
   }
   // Закреплённая пользователем версия, отличная от манифестной, проверяться нечем: сумм для
-  // неё у нас нет. Молча скачать другую версию значит подменить то, что он закрепил.
+  // неё у нас нет. Молча взять другую версию значит подменить то, что он закрепил.
   if (cfg.version && cfg.version !== manifest.version) {
     return { path: null, installed: false, reason: 'version_pin_without_checksum' };
   }
+
+  const candidate = launcherPath === undefined ? launcherCandidate() : launcherPath;
+  if (candidate) {
+    const theirs = engineVersion(candidate);
+    if (theirs !== manifest.version) {
+      log(
+        `Установка рядом держит ${theirs || 'неизвестную версию'}, закреплена ${manifest.version} — не используем её.`
+      );
+    } else if (!cfg.autoInstall) {
+      const actual = await sha256(candidate);
+      if (actual === manifest.targets[targetKey()]?.sha256) return { path: candidate, installed: false, adopted: 'in-place' };
+      return { path: null, installed: false, reason: 'launcher_checksum_mismatch' };
+    } else {
+      const a = await adoptAnalyzer(manifest, candidate, { log });
+      if (a.ok) return { path: a.path, installed: true, adopted: 'copied' };
+      if (a.reason === 'checksum_mismatch') {
+        log(`Версия совпала, а сумма — нет: файл рядом не тот, что закреплён. Ставлю свой.`);
+      }
+      // Копирование могло не удаться (на Windows лаунчер держит файл открытым). Это не
+      // дефект: ниже отработает обычная установка.
+    }
+  }
+
+  if (!cfg.autoInstall) return { path: null, installed: false, reason: 'autoinstall_disabled' };
   const r = await installAnalyzer(manifest, { log });
   return r.ok ? { path: r.path, installed: r.downloaded } : { path: null, installed: false, reason: r.reason };
 }
@@ -671,7 +724,9 @@ async function main(argv) {
           ? 'analyzer_unsupported_platform'
           : found.reason === 'version_pin_without_checksum'
             ? 'analyzer_version_pin_unverifiable'
-            : 'analyzer_unavailable'
+            : found.reason === 'launcher_checksum_mismatch'
+              ? 'analyzer_checksum_mismatch'
+              : 'analyzer_unavailable'
       );
     }
   }

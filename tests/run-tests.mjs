@@ -2412,6 +2412,86 @@ section('Установка анализатора — манифест и со�
 }
 
 // ---------------------------------------------------------------------------
+section('Чужая установка принимается, только если это ровно закреплённый бинарник');
+
+// Регресс боевого случая: манифест закрепили на новой версии, а гейт продолжал молча гонять
+// то, что держит установка лаунчера. Закрепление версии при этом выглядело работающим —
+// след честно печатал версию, но никто не сверял её с закреплённой.
+{
+  const boot = await import(pathToFileURL(join(ROOT, 'tools', 'analyzer-bootstrap.mjs')).href);
+  const run_ = await import(pathToFileURL(join(ROOT, 'tools', 'analyzer-run.mjs')).href);
+
+  const home = join(WORK, 'adopt-home');
+  rmSync(home, { recursive: true, force: true });
+  const launcher = join(home, 'bin');
+  mkdirSync(launcher, { recursive: true });
+  const theirs = join(launcher, process.platform === 'win32' ? 'bsl-analyzer-app.exe' : 'bsl-analyzer-app');
+  writeFileSync(theirs, 'чужой бинарник ровно той версии', 'utf8');
+
+  check('кандидат находится в подставленном каталоге', run_.launcherCandidate(launcher) === theirs, String(run_.launcherCandidate(launcher)));
+  check('пустого каталога не существует — кандидата нет', run_.launcherCandidate(join(WORK, 'нет-такого')) === null);
+
+  // Манифест синтетический: сумма считается по реальному файлу, поэтому усыновление обязано
+  // пройти. Сеть не нужна — источник лежит на диске.
+  const sha = await boot.sha256(theirs);
+  const fake = {
+    engine: 'test-engine',
+    version: '9.9.9',
+    repo: 'x/y',
+    urlTemplate: 'https://example/{asset}',
+    targets: { [boot.targetKey()]: { asset: 'fake', sha256: sha, size: readFileSync(theirs).length } },
+  };
+  const dataRoot = join(WORK, 'adopt-data');
+  rmSync(dataRoot, { recursive: true, force: true });
+
+  const ok = await boot.adopt(fake, theirs, { root: dataRoot });
+  check('совпавшая сумма — файл принят', ok.ok === true && ok.adopted === true, JSON.stringify(ok));
+  check('принятый файл лежит под нашим контролем, а не по чужому пути',
+    ok.path === boot.binaryPath(fake, dataRoot) && ok.path !== theirs, String(ok.path));
+  check('после приёма установка распознаётся штатной проверкой', boot.installed(fake, dataRoot) === ok.path);
+  const marker = JSON.parse(readFileSync(join(boot.installDir(fake, dataRoot), '.ready'), 'utf8'));
+  check('в маркере записан источник — видно, что принято, а не скачано', marker.installedFrom === theirs, JSON.stringify(marker));
+
+  // Совпал номер версии, но не совпали байты — ситуация подозрительная, и файл не берётся.
+  const dataRoot2 = join(WORK, 'adopt-data-2');
+  rmSync(dataRoot2, { recursive: true, force: true });
+  const wrong = { ...fake, targets: { [boot.targetKey()]: { asset: 'fake', sha256: 'f'.repeat(64), size: 1 } } };
+  const bad = await boot.adopt(wrong, theirs, { root: dataRoot2 });
+  check('несовпавшая сумма — файл отвергнут', bad.ok === false && bad.reason === 'checksum_mismatch', JSON.stringify(bad));
+  check('отвергнутый файл не оставляет ни установки, ни маркера',
+    !existsSync(boot.binaryPath(wrong, dataRoot2)) && !existsSync(join(boot.installDir(wrong, dataRoot2), '.ready')));
+
+  const gone = await boot.adopt(fake, join(launcher, 'нет-такого'), { root: join(WORK, 'adopt-data-3') });
+  check('отсутствующий источник — не исключение, а причина', gone.ok === false && gone.reason === 'source_missing', JSON.stringify(gone));
+
+  // Дальше проверяется порядок разрешения, поэтому каталог данных подменяется на пустой:
+  // иначе тест увидел бы установку той машины, на которой запущен, и означал бы разное в
+  // разных местах.
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = join(WORK, 'adopt-empty-data');
+  rmSync(process.env.CLAUDE_PLUGIN_DATA, { recursive: true, force: true });
+  try {
+    // Явно указанный бинарник старше всего остального: пользователь взял ответственность.
+    const own = await run_.ensureBslAnalyzer({ autoInstall: false, binary: theirs }, () => {});
+    check('явно указанный бинарник берётся раньше всего', own.path === theirs, JSON.stringify(own));
+
+    // Чужой бинарник, у которого не спросить версию, не годится: несовпадение с закреплённой
+    // версией — штатный исход, а не ошибка.
+    const mismatched = await run_.ensureBslAnalyzer({ autoInstall: false }, () => {}, { launcherPath: theirs });
+    check('чужая установка с другой версией не используется',
+      mismatched.path === null && mismatched.reason === 'autoinstall_disabled', JSON.stringify(mismatched));
+
+    // И её не спрашивают вовсе, когда чужой установки нет: кандидат может отсутствовать.
+    const none = await run_.ensureBslAnalyzer({ autoInstall: false }, () => {}, { launcherPath: null });
+    check('без чужой установки причина прежняя',
+      none.path === null && none.reason === 'autoinstall_disabled', JSON.stringify(none));
+  } finally {
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+  }
+}
+
+// ---------------------------------------------------------------------------
 section('Часовой проверяется по целям, а не «хотя бы один живой»');
 
 {

@@ -82,7 +82,7 @@ node "$QG/tools/config.mjs" path          # путь к файлу
 | Ключ | Умолчание | Значение | Переменная |
 |---|---|---|---|
 | `engine` | `bsl-analyzer` | движок: `bsl-analyzer` либо `bsl-ls` | `QG_ANALYZER_ENGINE` |
-| `binary` | — | путь к бинарнику; иначе ищется своя установка и `~/.bsl-analyzer/bin/` | `QG_ANALYZER_BIN` |
+| `binary` | — | путь к бинарнику; иначе берётся своя установка, а установка лаунчера — только если сошлись версия и сумма | `QG_ANALYZER_BIN` |
 | `jar` | — | путь к jar; обязателен для `bsl-ls` | `QG_ANALYZER_JAR` |
 | `version` | — | закреплённая версия; несовпадение останавливает прогон | `QG_ANALYZER_VERSION` |
 | `required` | `false` | `true` — без анализатора гейт не снимается | `QG_ANALYZER_REQUIRED` |

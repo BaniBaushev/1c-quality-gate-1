@@ -233,7 +233,7 @@
 
 ```
 [qg sentinel: target=v8std, id=std454, status=found]
-[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.66]
+[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.73]
 ```
 
 Обязательные поля: `target`, `status` (`found` либо `not_found`).
@@ -310,7 +310,7 @@ node tools/evidence-validator.mjs <файл> --gate   # строгий, для �
 
 [qg scope: volume=C1, files=1, loc=+18/-3, archetypes=[query], complexity=[none], driver=archetype:query, resolved=code:L2|arch:skip|xml:n/a|hygiene:full, config=default]
 [qg sentinel: target=v8std, id=std454, status=found]
-[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.66]
+[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.73]
 [qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM,qg:HYG-DASH], verdict=clean]
 [qg applied: layer=code, scope=static-analysis, ids=[bslls:MissingCodeTryCatchEx], verdict=violation:bslls:MissingCodeTryCatchEx]
 [qg applied: layer=code, scope=query-in-loop, ids=[std436,bslls:QueryInLoop], verdict=clean]

@@ -100,7 +100,7 @@ BSL (2):
 
 [qg scope: volume=C2, files=2, loc=+64/-11, archetypes=[query,object-event], complexity=[nesting:5], driver=archetype:query, resolved=code:L1+L2|arch:2|xml:n/a|hygiene:full, config=default]
 [qg sentinel: target=v8std, id=std454, status=found]
-[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.66]
+[qg sentinel: target=bslls, id=CommonModuleInvalidType, status=found, engine=bsl-analyzer@0.2.73]
 [qg applied: layer=hygiene, scope=file-encoding, ids=[qg:HYG-BOM,qg:HYG-DASH], verdict=clean]
 [qg applied: layer=code, scope=query-in-loop, ids=[std436,bslls:QueryInLoop], verdict=violation:std436]
 [qg applied: layer=code, scope=query-top-order, ids=[qg:QRY-TOP-WITHOUT-ORDER], verdict=clean]
@@ -550,7 +550,7 @@ node "$QG/tools/config.mjs" show
 
 ```json
 {
-  "analyzer": { "engine": "bsl-analyzer", "version": "0.2.66", "required": false },
+  "analyzer": { "engine": "bsl-analyzer", "version": "0.2.73", "required": false },
   "volume": { "c1MaxLines": 40, "c1MaxFiles": 1 },
   "complexity": { "maxNesting": 4, "maxMethodLines": 120, "maxParams": 7 },
   "archetypes": {
