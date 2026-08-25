@@ -181,7 +181,8 @@ node "$QG/tools/config.mjs" show
 небрежности (`references/run-environment.md`).
 
 **У части проверок есть исполняемый инструмент. Для них строку следа печатает сам
-инструмент** — не сочиняй её. Прогон отмечается в журнале (`.claude/.state/qg-runs.jsonl`)
+инструмент** — не сочиняй её. Прогон отмечается в журнале (`qg-runs.jsonl` в каталоге
+состояния гейта: `.claude/.state/` в Claude Code, `.opencode/.state/` в OpenCode)
 вместе с путями файлов, и валидатор сверяет по нему каждую запись `applied`: и то, что
 инструмент запускался, и то, что он видел **весь** состав правки. Прогон по одному файлу из
 десяти заявление обо всех десяти не закрывает; `skipped ... reason=not_applicable` — тоже
@@ -313,18 +314,24 @@ node "$QG/tools/gate.mjs" release --class C0 --reason "<почему>"
 
 ## Путь к инструментам плагина (`$QG`)
 
-Все команды выше используют `$QG` — каталог установленного плагина. **Переменная
+Все команды выше используют `$QG` — каталог установленного плагина. Плагин работает в двух
+харнессах (Claude Code и OpenCode), и раскладка установки у них разная. **Переменная
 `CLAUDE_PLUGIN_ROOT` доступна хукам, но не оболочке**: в шелле она пуста, и путь вида
 `"${CLAUDE_PLUGIN_ROOT}/tools/..."` схлопнулся бы в `/tools/...`.
 
 Разреши путь **первой командой прогона** и дальше подставляй полученное значение буквально
-(состояние оболочки между вызовами не сохраняется):
+(состояние оболочки между вызовами не сохраняется). Порядок источников: сначала раскладка
+OpenCode (проектная и пользовательская), затем Claude Code:
 
 ```bash
-QG="${CLAUDE_PLUGIN_ROOT:-$(node -e "const p=require(require('node:os').homedir()+'/.claude/plugins/installed_plugins.json').plugins;const k=Object.keys(p).find(n=>n.startsWith('1c-quality-gate@'));if(k&&p[k][0])process.stdout.write(p[k][0].installPath)" 2>/dev/null)}"
-QG="${QG:-$(ls -d ~/.claude/plugins/cache/*/1c-quality-gate/*/ 2>/dev/null | sort -V | tail -1)}"; QG="${QG%/}"; echo "$QG"
+QG="${QG_PROJECT_DIR:+$QG_PROJECT_DIR/.opencode/1c-quality-gate}"
+QG="${QG:-${CLAUDE_PLUGIN_ROOT:-$(node -e "const p=require(require('node:os').homedir()+'/.claude/plugins/installed_plugins.json').plugins;const k=Object.keys(p).find(n=>n.startsWith('1c-quality-gate@'));if(k&&p[k][0])process.stdout.write(p[k][0].installPath)" 2>/dev/null)}}"
+QG="${QG:-$(ls -d ~/.claude/plugins/cache/*/1c-quality-gate/*/ 2>/dev/null | sort -V | tail -1)}"; QG="${QG%/}"
+QG="${QG:-$HOME/.config/opencode/1c-quality-gate}"
+test -d "$QG/tools" && echo "$QG" || { echo "Плагин не найден ни в одном харнессе" >&2; exit 1; }
 ```
 
-Порядок источников и `sort -V` не декоративны: без них сессия работает инструментами
-устаревшей версии и честно отчитывается, что проверок «не существует». Разбор —
-`references/run-environment.md`.
+Проверка `test -d "$QG/tools"` обязательна: каждый источник может существовать и быть
+битым, и единственный честный критерий — наличие инструментов. Порядок источников и
+`sort -V` не декоративны: без них сессия работает инструментами устаревшей версии и честно
+отчитывается, что проверок «не существует». Разбор — `references/run-environment.md`.
