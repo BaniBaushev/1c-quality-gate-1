@@ -200,7 +200,7 @@ for (const f of skillFiles) {
 // Проверялись только навыки. Между тем субагент с испорченным frontmatter просто не
 // поднимается, а контуры трактуют «субагента нет в среде» как законную деградацию с записью
 // skipped: дефект пакета выглядит как штатное окружение пользователя и не расследуется.
-for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)))) {
+for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)) && !rel(p).startsWith('opencode/'))) {
   const text = readFileSync(f, 'utf8');
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) {
@@ -222,6 +222,22 @@ for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)))) {
   if (modelMatch && !AGENT_MODELS.has(modelMatch[1])) {
     fail(rel(f), `model "${modelMatch[1]}" вне набора ${[...AGENT_MODELS].join(', ')}`);
   }
+}
+
+// Субагенты OpenCode (opencode/agents/): другой харнесс, другие правила frontmatter.
+// Поле name у OpenCode необязательно (имя — из файла), зато обязателен mode: subagent —
+// без него файл описывает основного агента, а не субагента, и механика гейта его не поднимет.
+for (const f of files.filter((p) => /^opencode\/agents\/[^/]+\.md$/.test(rel(p)))) {
+  const text = readFileSync(f, 'utf8');
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) {
+    fail(rel(f), 'нет frontmatter');
+    continue;
+  }
+  const fm = m[1];
+  if (!/^description:\s*\S/m.test(fm)) fail(rel(f), 'во frontmatter нет поля description');
+  if (!/^mode:\s*subagent\s*$/m.test(fm)) fail(rel(f), 'во frontmatter нет поля mode: subagent');
+  if (!/^tools:\s*\S/m.test(fm)) fail(rel(f), 'во frontmatter нет поля tools');
 }
 
 for (const f of files.filter((p) => /(^|\/)commands\/[^/]+\.md$/.test(rel(p)))) {
