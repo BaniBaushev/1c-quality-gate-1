@@ -17,8 +17,8 @@ import { join } from 'node:path';
 import { validate } from './evidence-validator.mjs';
 import { resolveProjectRoot } from './project-root.mjs';
 import { readConfig, versionSuffix, pluginVersion } from './config.mjs';
+import { stateDirSegments } from './state-dir.mjs';
 
-const STATE_DIR = ['.claude', '.state'];
 const PENDING = 'qg-pending.json';
 const DONE = 'qg-done.json';
 
@@ -35,7 +35,7 @@ function root() {
 }
 
 function paths() {
-  const dir = join(root(), ...STATE_DIR);
+  const dir = join(root(), ...stateDirSegments());
   return { dir, pending: join(dir, PENDING), done: join(dir, DONE) };
 }
 
