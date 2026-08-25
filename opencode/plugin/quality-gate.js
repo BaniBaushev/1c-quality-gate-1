@@ -26,7 +26,7 @@
 
 import { existsSync } from 'node:fs';
 import { dirname, resolve, isAbsolute, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Максимум автоматических возвратов на неизменный состав правок. */
 const MAX_REPROMPTS = 3;
@@ -67,6 +67,10 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
   // Состояние гейта OpenCode хранит отдельно от Claude Code: .opencode/.state
   // вместо .claude/.state. Инструменты пакета читают QG_STATE_DIR (tools/state-dir.mjs).
   if (!process.env.QG_STATE_DIR) process.env.QG_STATE_DIR = '.opencode/.state';
+  // Одно значение на весь плагин: иначе при пользовательском QG_STATE_DIR взвод шёл бы
+  // в .opencode/.state, а снятие через gate.mjs из оболочки — в каталог пользователя,
+  // и гейт не снимался бы никогда.
+  const stateEnv = { QG_STATE_DIR: process.env.QG_STATE_DIR };
 
   // Корень пакета и ядро механики гейта. Если импорт не удался (пакет установлен
   // частично), плагин молчит — ложный гейт хуже отсутствующего.
@@ -76,8 +80,10 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
   let core = null;
   let ensureConfig = null;
   try {
-    core = await import(join(packageRoot, 'hooks', 'gate-core.mjs'));
-    ({ ensureConfig } = await import(join(packageRoot, 'tools', 'config.mjs')));
+    // file-URL, а не путь: динамический import() по голому пути на Windows
+    // падает с ERR_UNSUPPORTED_ESM_URL_SCHEME, и плагин молча не работал бы вообще.
+    core = await import(pathToFileURL(join(packageRoot, 'hooks', 'gate-core.mjs')).href);
+    ({ ensureConfig } = await import(pathToFileURL(join(packageRoot, 'tools', 'config.mjs')).href));
   } catch {
     return {};
   }
@@ -115,7 +121,7 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
           filePath: abs,
           sessionId: String(input.sessionID || 'unknown-session'),
           ensureConfig,
-          env: { QG_STATE_DIR: '.opencode/.state' },
+          env: stateEnv,
         });
         if (!armed) return;
 
@@ -136,7 +142,7 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
         const sessionId = String(event?.properties?.sessionID || '');
         if (!sessionId) return;
 
-        const state = core.readPendingState(root, { QG_STATE_DIR: '.opencode/.state' });
+        const state = core.readPendingState(root, stateEnv);
         if (!state) return;
 
         if (state.corrupt) {
@@ -148,7 +154,7 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
                   {
                     type: 'text',
                     text:
-                      '[ГЕЙТ КАЧЕСТВА 1С]\nМаркер .opencode/.state/qg-pending.json повреждён и не читается.\n' +
+                      `[ГЕЙТ КАЧЕСТВА 1С]\nМаркер ${stateEnv.QG_STATE_DIR}/qg-pending.json повреждён и не читается.\n` +
                       'Прогони skill quality-gate заново либо удали маркер вручную, если правки не требуют проверки.',
                   },
                 ],
