@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "v8std": {
+      "type": "remote",
+      "url": "https://ai.v8std.ru/mcp",
+      "enabled": true
+    }
+  }
+}
