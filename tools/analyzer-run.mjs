@@ -587,7 +587,7 @@ export function toEvidence({
   const lines = [];
   const stamp = version ? `${engine}@${version}` : engine;
   lines.push(
-    `[qg sentinel: target=bslls, id=${SENTEL_CODE ?? SENTINEL_CODE}, status=${sentinelResult.status}, engine=${stamp}]`
+    `[qg sentinel: target=bslls, id=${SENTINEL_CODE}, status=${sentinelResult.status}, engine=${stamp}]`
   );
   // Неразобранный файл — не «чисто» и не «нарушение», а отсутствие проверки. Без этой записи
   // он растворяется в общем вердикте и выглядит проверенным.
