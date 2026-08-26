@@ -319,19 +319,23 @@ node "$QG/tools/gate.mjs" release --class C0 --reason "<почему>"
 `CLAUDE_PLUGIN_ROOT` доступна хукам, но не оболочке**: в шелле она пуста, и путь вида
 `"${CLAUDE_PLUGIN_ROOT}/tools/..."` схлопнулся бы в `/tools/...`.
 
-Разреши путь **первой командой прогона** и дальше подставляй полученное значение буквально
-(состояние оболочки между вызовами не сохраняется). Порядок источников: сначала раскладка
-OpenCode (проектная и пользовательская), затем Claude Code:
+Разреши путь **первой команды прогона** и дальше подставляй полученное значение буквально
+(состояние оболочки между вызовами не сохраняется). **Каждый кандидат принимается только
+после проверки `test -d "$QG/tools"`** — существование переменной или каталога ещё не
+значит, что там лежит этот плагин: установка могла быть частичной, устаревшей или чужой.
+Без проверки на кандидате первый же непустой источник молча выигрывает, и прогон уходит
+в битую копию с честным отчётом «инструменты не найдены». Порядок: сначала раскладка
+OpenCode (проектная, затем пользовательская), затем Claude Code:
 
 ```bash
-QG="${QG_PROJECT_DIR:+$QG_PROJECT_DIR/.opencode/1c-quality-gate}"
-QG="${QG:-${CLAUDE_PLUGIN_ROOT:-$(node -e "const p=require(require('node:os').homedir()+'/.claude/plugins/installed_plugins.json').plugins;const k=Object.keys(p).find(n=>n.startsWith('1c-quality-gate@'));if(k&&p[k][0])process.stdout.write(p[k][0].installPath)" 2>/dev/null)}}"
-QG="${QG:-$(ls -d ~/.claude/plugins/cache/*/1c-quality-gate/*/ 2>/dev/null | sort -V | tail -1)}"; QG="${QG%/}"
-QG="${QG:-$HOME/.config/opencode/1c-quality-gate}"
+QG=""
+[ -n "${QG_PROJECT_DIR:-}" ] && QG="$QG_PROJECT_DIR/.opencode/1c-quality-gate"
+[ ! -d "$QG/tools" ] && QG="$HOME/.config/opencode/1c-quality-gate"
+[ ! -d "$QG/tools" ] && QG="${CLAUDE_PLUGIN_ROOT:-}"
+[ ! -d "$QG/tools" ] && QG="$(node -e "const p=require(require('node:os').homedir()+'/.claude/plugins/installed_plugins.json').plugins;const k=Object.keys(p).find(n=>n.startsWith('1c-quality-gate@'));if(k&&p[k][0])process.stdout.write(p[k][0].installPath)" 2>/dev/null)"
+[ ! -d "$QG/tools" ] && QG="$(ls -d ~/.claude/plugins/cache/*/1c-quality-gate/*/ 2>/dev/null | sort -V | tail -1)" && QG="${QG%/}"
 test -d "$QG/tools" && echo "$QG" || { echo "Плагин не найден ни в одном харнессе" >&2; exit 1; }
 ```
 
-Проверка `test -d "$QG/tools"` обязательна: каждый источник может существовать и быть
-битым, и единственный честный критерий — наличие инструментов. Порядок источников и
-`sort -V` не декоративны: без них сессия работает инструментами устаревшей версии и честно
+`sort -V` не декоративен: без него сессия работает инструментами устаревшей версии и честно
 отчитывается, что проверок «не существует». Разбор — `references/run-environment.md`.
