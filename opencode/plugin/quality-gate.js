@@ -15,7 +15,9 @@
  * работу. Это настойчивый, но мягкий гейт: пользователь всегда может прервать
  * сессию вручную. Чтобы цикл «idle → возврат» не был бесконечным спамом, на
  * неизменный состав правок даётся не более MAX_REPROMPTS автоматических возвратов;
- * счётчик сбрасывает любая новая правка.
+ * счётчик ведётся по сессии и сбрасывает её любая новая правка. Исчерпание лимита
+ * фиксируется записью gate-surrendered в журнале прогонов (без поля scope — запись
+ * наблюдаема, но не засчитывается валидатором охвата как проверка).
  *
  * Логика взвода, формат состояния и тексты — в hooks/gate-core.mjs (единый источник,
  * общий с stdin-обёртками хуков Claude Code). Снятие гейта — только через
@@ -24,12 +26,15 @@
  * Любая внутренняя ошибка плагина гасится: гейт качества не имеет права ломать работу.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Максимум автоматических возвратов на неизменный состав правок. */
 const MAX_REPROMPTS = 3;
+
+/** Верхняя граница журнала прогонов (tools/run-journal.mjs). */
+const JOURNAL_KEEP = 500;
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -78,11 +83,13 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
   if (!packageRoot) return {};
 
   let core = null;
+  let stateDir = null;
   let ensureConfig = null;
   try {
     // file-URL, а не путь: динамический import() по голому пути на Windows
     // падает с ERR_UNSUPPORTED_ESM_URL_SCHEME, и плагин молча не работал бы вообще.
     core = await import(pathToFileURL(join(packageRoot, 'hooks', 'gate-core.mjs')).href);
+    stateDir = await import(pathToFileURL(join(packageRoot, 'tools', 'state-dir.mjs')).href);
     ({ ensureConfig } = await import(pathToFileURL(join(packageRoot, 'tools', 'config.mjs')).href));
   } catch {
     return {};
@@ -92,8 +99,43 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
   // когда правка фактически состоялась.
   const pendingCalls = new Map();
 
-  // Защита от бесконечного цикла возвратов: ключ — отпечаток состава правок сессии.
+  // Защита от бесконечного цикла возвратов. Счётчик — ПО СЕССИИ: sessionId →
+  // { fingerprint, count }. Глобальный лимит (как у первой редакции, ключ = сессия +
+  // отпечаток) при переполнении карты стирал счётчики ВСЕХ сессий, включая текущую, —
+  // и после очистки та же непроверенная правка получала новые MAX_REPROMPTS возвратов.
+  // Здесь при переполнении вытесняются только ЧУЖИЕ сессии, своя сессия свой счётчик
+  // никогда не теряет.
   const reprompts = new Map();
+
+  /**
+   * Фиксирует сдачу мягкого гейта в журнал прогонов. Запись БЕЗ поля scope:
+   * валидатор охвата (tools/evidence-validator.mjs) признаёт только записи со строковым
+   * scope, поэтому событие сдачи не может быть засчитано как прогон проверки — журнал
+   * читают оба харнесса, и подмена смысла недопустима. Смысл записи — оставить
+   * наблюдаемый след: мягкий гейт сдался, правки остались непроверенными.
+   */
+  const journalSurrender = (sessionId, files) => {
+    try {
+      const dir = join(root, ...stateDir.stateDirSegments(stateEnv));
+      mkdirSync(dir, { recursive: true });
+      const journal = join(dir, 'qg-runs.jsonl');
+      const lines = existsSync(journal)
+        ? readFileSync(journal, 'utf8').split('\n').filter(Boolean)
+        : [];
+      lines.push(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: 'gate-surrendered',
+          tool: 'opencode-plugin',
+          sessionId,
+          files: files.map(([f]) => f),
+        })
+      );
+      writeFileSync(journal, lines.slice(-JOURNAL_KEEP).join('\n') + '\n', 'utf8');
+    } catch {
+      /* журнал не обязан мешать работе */
+    }
+  };
 
   return {
     'tool.execute.before': async (input, output) => {
@@ -173,12 +215,26 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
         const fingerprint = JSON.stringify(
           files.map(([f, v]) => [f, v.edits, v.lastEdit]).sort()
         );
-        const key = `${sessionId}:${fingerprint}`;
-        const count = (reprompts.get(key) || 0) + 1;
-        reprompts.set(key, count);
-        if (reprompts.size > 200) reprompts.clear(); // долгоживущий процесс, карта не должна расти
+        let entry = reprompts.get(sessionId);
+        if (!entry || entry.fingerprint !== fingerprint) entry = { fingerprint, count: 0 };
+        entry.count += 1;
+        reprompts.set(sessionId, entry);
+        if (reprompts.size > 200) {
+          // Долгоживущий процесс, карта не должна расти. Вытесняем чужие сессии —
+          // счётчик ТЕКУЩЕЙ сессии сбрасывать нельзя, иначе лимит возвратов обнулялся бы
+          // самой же уборкой.
+          for (const id of reprompts.keys()) {
+            if (reprompts.size <= 200) break;
+            if (id !== sessionId) reprompts.delete(id);
+          }
+        }
 
-        if (count > MAX_REPROMPTS) return;
+        if (entry.count > MAX_REPROMPTS) {
+          // Первое превышение лимита — момент сдачи гейта: фиксируем в журнале,
+          // чтобы отказ от проверки был наблюдаемым фактом, а не тихим умолчанием.
+          if (entry.count === MAX_REPROMPTS + 1) journalSurrender(sessionId, files);
+          return;
+        }
 
         const foreign = Object.entries(state.sessions || {})
           .filter(([id]) => id !== sessionId)
@@ -197,7 +253,7 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
                     foreign,
                     packageRoot,
                     mode: 'opencode',
-                    repeated: count,
+                    repeated: entry.count,
                     maxReprompts: MAX_REPROMPTS,
                   }),
                 },

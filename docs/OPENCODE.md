@@ -18,7 +18,10 @@ cd 1c-quality-gate
 
 ```text
 .opencode/plugin/quality-gate.js   — плагин OpenCode
-.opencode/skills/quality-gate/     — skill прогона
+.opencode/plugin/package.json      — type: module (ESM-плагин под Node 20)
+.opencode/skills/                  — все пять навыков контура (quality-gate,
+                                     bsl-code-review, bsl-architecture-review,
+                                     xml-structure-review, file-hygiene) и shared/
 .opencode/commands/                — команды /gate и /gate-status
 .opencode/agents/                  — субагенты контуров (mode: subagent)
 .opencode/1c-quality-gate/         — механика: hooks/, tools/, assets/, docs/
@@ -48,8 +51,12 @@ opencode.json                      — MCP v8std (создаётся из «open
 
 Чтобы цикл «idle → возврат» не превращался в бесконечный спам, на неизменный состав правок
 даётся не более трёх автоматических возвратов (`MAX_REPROMPTS` в
-`opencode/plugin/quality-gate.js`). Любая новая правка меняет отпечаток состава и сбрасывает
-счётчик: пока работа идёт, возвраты продолжаются.
+`opencode/plugin/quality-gate.js`). Счётчик ведётся по сессии, любая новая правка меняет
+отпечаток состава и сбрасывает его: пока работа идёт, возвраты продолжаются. Исчерпание
+лимита фиксируется записью `gate-surrendered` в журнале прогонов
+(`.opencode/.state/qg-runs.jsonl`) — отказ от проверки остаётся наблюдаемым фактом,
+а не тихим умолчанием. Запись намеренно без поля `scope`, поэтому валидатор охвата
+не засчитывает её как прогон.
 
 Требования к снятию гейта не смягчаются: `gate.mjs release` по-прежнему требует
 машиночитаемый след прогона, валидатор следа общий для обоих харнессов.
