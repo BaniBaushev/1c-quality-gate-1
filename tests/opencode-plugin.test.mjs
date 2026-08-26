@@ -86,6 +86,15 @@ await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 's1
 await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 's1' } } });
 check('возвратов не более MAX_REPROMPTS на неизменный состав', client.prompts.length === 3);
 
+// Исчерпание лимита фиксируется в журнале прогонов записью без scope — наблюдаемой,
+// но не засчитываемой валидатором охвата.
+const journalPath = join(root, '.opencode', '.state', 'qg-runs.jsonl');
+check('сдача мягкого гейта записана в журнал', existsSync(journalPath));
+const surrender = existsSync(journalPath)
+  ? readFileSync(journalPath, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((r) => r.event === 'gate-surrendered')
+  : null;
+check('запись сдачи без scope (инертна для валидатора)', surrender && !('scope' in surrender) && surrender.sessionId === 's1');
+
 // Новая правка сбрасывает счётчик возвратов.
 writeFileSync(bslPath, 'Процедура Тест2() КонецПроцедуры\n', 'utf8');
 await plugin['tool.execute.after']({ callID: 'c4', sessionID: 's1', tool: 'edit' }, { args: { filePath: bslPath }, output: 'ok' });
