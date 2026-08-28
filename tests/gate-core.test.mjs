@@ -20,6 +20,7 @@ import {
   gateHint,
   blockMessage,
 } from '../hooks/gate-core.mjs';
+import { stateDirSegments } from '../tools/state-dir.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -89,6 +90,18 @@ check('состояние разделено по сессиям', Object.keys(s
 const root2 = mkdtempSync(join(tmpdir(), 'qg-core-def-'));
 armGate({ root: root2, filePath: bsl, sessionId: 's', env: {} });
 check('умолчание каталога состояния — .claude/.state', existsSync(join(root2, '.claude', '.state', 'qg-pending.json')));
+
+// --- stateDirSegments: абсолютный QG_STATE_DIR отвергается в пользу умолчания ---
+// `C:\state` после разбора на сегменты дал бы ['C:', 'state'] под корнем
+// проекта: мусор вместо каталога, поэтому такое значение игнорируется.
+check('абсолютный POSIX QG_STATE_DIR (/abs/state) отвергается',
+  JSON.stringify(stateDirSegments({ QG_STATE_DIR: '/abs/state' })) === JSON.stringify(['.claude', '.state']));
+check('абсолютный Windows QG_STATE_DIR (C:\\state) отвергается',
+  JSON.stringify(stateDirSegments({ QG_STATE_DIR: 'C:\\state' })) === JSON.stringify(['.claude', '.state']));
+check('UNC QG_STATE_DIR (\\\\srv\\state) отвергается',
+  JSON.stringify(stateDirSegments({ QG_STATE_DIR: '\\\\srv\\state' })) === JSON.stringify(['.claude', '.state']));
+check('относительный QG_STATE_DIR (.opencode/.state) по-прежнему работает',
+  JSON.stringify(stateDirSegments({ QG_STATE_DIR: '.opencode/.state' })) === JSON.stringify(['.opencode', '.state']));
 
 // --- readPendingState: специальные состояния ---
 check('нет маркера — null', readPendingState(mkdtempSync(join(tmpdir(), 'qg-core-empty-')), {}) === null);

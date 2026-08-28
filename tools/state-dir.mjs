@@ -10,10 +10,19 @@
  * Значение — относительный путь от корня проекта, например `.opencode/.state`.
  */
 
-/** Сегменты пути каталога состояния для join(). */
+/** Абсолютный путь: `/…`, `C:\…`, `C:/…`, UNC `\\…`. */
+const RE_ABSOLUTE = /^([a-zA-Z]:[\\/]|\\\\|\/)/;
+
+/**
+ * Сегменты пути каталога состояния для join().
+ *
+ * Абсолютный путь не поддержан: `C:\state` после разбора на сегменты
+ * превратился бы в `['C:', 'state']` под корнем проекта — мусор вместо
+ * каталога. Такое значение отвергается, и действует умолчание.
+ */
 export function stateDirSegments(env = process.env) {
   const v = env.QG_STATE_DIR;
-  if (v && typeof v === 'string') {
+  if (v && typeof v === 'string' && !RE_ABSOLUTE.test(v)) {
     const parts = v.split(/[\\/]+/).filter(Boolean);
     if (parts.length) return parts;
   }
