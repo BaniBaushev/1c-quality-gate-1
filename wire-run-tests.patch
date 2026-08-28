@@ -1,0 +1,33 @@
+--- a/tests/run-tests.mjs
++++ b/tests/run-tests.mjs
+@@ -22,7 +22,7 @@
+ import { removeTreeSync } from '../tools/fs-safe.mjs';
+ import { join, dirname } from 'node:path';
+ import { fileURLToPath, pathToFileURL } from 'node:url';
+-import { execFileSync } from 'node:child_process';
++import { execFileSync, spawnSync } from 'node:child_process';
+ import { tmpdir } from 'node:os';
+ 
+ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+@@ -3497,6 +3497,21 @@
+ }
+ 
+ // ---------------------------------------------------------------------------
++// Изолированные наборы тестов — отдельными процессами: у них собственные счётчики
++// и временные каталоги, а их падение обязано быть видно в общем итоге CI.
++for (const suite of ['tests/gate-core.test.mjs', 'tests/opencode-plugin.test.mjs']) {
++  const res = spawnSync(process.execPath, [join(ROOT, ...suite.split('/'))], {
++    encoding: 'utf8',
++    env: { ...process.env },
++  });
++  check(
++    `${suite} — весь набор зелёный`,
++    res.status === 0,
++    res.status === 0 ? '' : (res.stdout || '') + (res.stderr || '')
++  );
++}
++
++// ---------------------------------------------------------------------------
+ process.stdout.write(`\n${'='.repeat(60)}\nПройдено: ${passed}, провалено: ${failures.length}\n`);
+ if (failures.length) {
+   process.stdout.write('\nПровалившиеся проверки:\n');
