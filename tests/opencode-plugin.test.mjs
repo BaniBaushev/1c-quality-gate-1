@@ -45,8 +45,11 @@ const client = makeClient();
 const plugin = await makePlugin(root, client);
 
 check('плагин возвращает обработчики', typeof plugin['tool.execute.after'] === 'function' && typeof plugin.event === 'function');
-check('плагин выставляет QG_PROJECT_DIR', process.env.QG_PROJECT_DIR === root);
-check('плагин выставляет QG_STATE_DIR', process.env.QG_STATE_DIR === '.opencode/.state');
+check('плагин объявляет config и shell.env', typeof plugin.config === 'function' && typeof plugin['shell.env'] === 'function');
+// Окружение процесса OpenCode плагин НЕ правит: значения уходят в оболочку хуком
+// shell.env. Мутация process.env держалась на допущении, что дочерний процесс
+// инструмента её унаследует, — а на нём стояла вся схема двух харнессов.
+check('плагин не правит окружение процесса', process.env.QG_PROJECT_DIR === undefined && process.env.QG_STATE_DIR === undefined);
 
 // Правка .bsl взводит гейт и дописывает подсказку в результат инструмента.
 const bslPath = join(root, 'CommonModules', 'Модуль', 'Module.bsl');
@@ -125,6 +128,87 @@ try {
   await plugin3.event({ event: { type: 'session.idle', properties: { sessionID: 's9' } } });
 } catch { survived = false; }
 check('ошибка клиента гасится', survived);
+
+// ---------------------------------------------------------------------------
+// shell.env: инструменты пакета запускает агент из оболочки, а не плагин. Корень
+// пакета, корень проекта и каталог состояния он обязан получить готовыми — иначе
+// ищет пакет угадыванием, а состояние берёт по умолчанию Claude Code.
+{
+  const env = {};
+  await plugin['shell.env']({ cwd: root }, { env });
+  check('shell.env отдаёт QG_ROOT на корень пакета', existsSync(join(env.QG_ROOT || '', 'hooks', 'gate-core.mjs')));
+  check('shell.env отдаёт QG_PROJECT_DIR', env.QG_PROJECT_DIR === root);
+  check('shell.env отдаёт QG_STATE_DIR', env.QG_STATE_DIR === '.opencode/.state');
+  // Взвод и снятие обязаны попадать в один каталог: значение одно на весь плагин.
+  check('каталог состояния тот же, в котором лежит маркер', existsSync(join(root, ...env.QG_STATE_DIR.split('/'), 'qg-pending.json')));
+
+  const preset = { QG_ROOT: '/своё', QG_PROJECT_DIR: '/своё', QG_STATE_DIR: 'своё' };
+  await plugin['shell.env']({ cwd: root }, { env: preset });
+  check('shell.env не перекрывает заданное пользователем', preset.QG_ROOT === '/своё' && preset.QG_STATE_DIR === 'своё');
+
+  let survivedEnv = true;
+  try {
+    await plugin['shell.env']({ cwd: root }, {});
+    await plugin['shell.env']({ cwd: root }, { env: null });
+  } catch { survivedEnv = false; }
+  check('shell.env не падает на неожиданном вводе', survivedEnv);
+}
+
+// ---------------------------------------------------------------------------
+// config: пакет лежит в кэше OpenCode, куда сканирование проектных каталогов не
+// достаёт. Состав объявляется кодом — иначе /gate загрузится, а контуры, субагенты
+// и источник стандартов окажутся недоступны.
+{
+  const cfg = {};
+  await plugin.config(cfg);
+  const skillsDir = (cfg.skills?.paths || [])[0];
+  check('config регистрирует каталог навыков', !!skillsDir && existsSync(join(skillsDir, 'quality-gate', 'SKILL.md')));
+  check('регистрируются все пять навыков контура',
+    ['quality-gate', 'bsl-code-review', 'bsl-architecture-review', 'xml-structure-review', 'file-hygiene']
+      .every((n) => existsSync(join(skillsDir, n, 'SKILL.md'))));
+  check('config регистрирует команды', !!cfg.command?.gate?.template && !!cfg.command?.['gate-status']?.template);
+  check('config регистрирует субагентов', ['bsl-verifier', 'bsl-scout', 'xml-runner'].every((n) => !!cfg.agent?.[n]?.prompt));
+  check('субагент едет с картой инструментов и режимом', cfg.agent?.['bsl-verifier']?.mode === 'subagent' && cfg.agent?.['bsl-verifier']?.tools?.bash === true);
+  check('config регистрирует MCP стандартов', cfg.mcp?.v8std?.type === 'remote');
+
+  // Повторный вызов не должен дублировать путь: конфигурация читается не один раз.
+  await plugin.config(cfg);
+  check('повторный config не дублирует каталог навыков', cfg.skills.paths.filter((p) => p === skillsDir).length === 1);
+
+  // Своё имя сильнее нашего: пользователь не должен молча терять свою запись.
+  const mine = {
+    skills: { paths: [] },
+    command: { gate: { template: 'моя команда' } },
+    agent: { 'bsl-verifier': { prompt: 'мой агент' } },
+    mcp: { v8std: { type: 'local', command: ['своё'] } },
+  };
+  await plugin.config(mine);
+  check('config не перекрывает записи пользователя',
+    mine.command.gate.template === 'моя команда' &&
+    mine.agent['bsl-verifier'].prompt === 'мой агент' &&
+    mine.mcp.v8std.type === 'local');
+
+  let survivedCfg = true;
+  try {
+    await plugin.config({ skills: { paths: 'не массив' } });
+  } catch { survivedCfg = false; }
+  check('config не падает на испорченной конфигурации', survivedCfg);
+}
+
+// ---------------------------------------------------------------------------
+// Разбор frontmatter: узкий по замыслу. Всё, что за пределами признаваемой формы,
+// обязано вернуть null и не зарегистрироваться — субагент с потерянной картой
+// инструментов опаснее незарегистрированного.
+{
+  const reg = await import(pathToFileURL(join(import.meta.dirname, '..', 'opencode', 'plugin', 'registry.js')).href);
+  check('разбор: нет frontmatter — null', reg.parseFrontmatter('просто текст') === null);
+  check('разбор: незакрытый frontmatter — null', reg.parseFrontmatter('---\nname: x\n') === null);
+  check('разбор: непризнанная конструкция — null', reg.parseFrontmatter('---\n- список\n---\nтело') === null);
+  const p = reg.parseFrontmatter('---\nmode: subagent\ntools:\n  bash: false\n---\nтело');
+  check('разбор: булево во вложенной карте — булево', p?.data.tools.bash === false && p.body === 'тело');
+  const folded = reg.parseFrontmatter('---\ndescription: >-\n  первая\n  вторая\n---\nтело');
+  check('разбор: свёрнутый блок собирается целиком', folded?.data.description === 'первая\nвторая');
+}
 
 rmSync(root, { recursive: true, force: true });
 

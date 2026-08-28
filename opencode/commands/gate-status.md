@@ -4,11 +4,10 @@ description: Показать состояние гейта качества 1С
 
 Покажи текущее состояние гейта качества.
 
-Сначала разреши путь к пакету инструментов (корень проекта + `.opencode/1c-quality-gate`):
+Корень пакета плагин отдаёт в окружение оболочки переменной `QG_ROOT`:
 
 ```bash
-if [ -n "$QG_PROJECT_DIR" ]; then R="$QG_PROJECT_DIR"; else R="$PWD"; while [ "$R" != "/" ] && [ ! -e "$R/.1c-quality-gate.json" ] && [ ! -d "$R/.git" ]; do R="$(dirname "$R")"; done; fi
-QG="$R/.opencode/1c-quality-gate"; test -d "$QG/tools" && node "$QG/tools/gate.mjs" status || echo "пакет не найден: $QG"
+test -d "$QG_ROOT/tools" && node "$QG_ROOT/tools/gate.mjs" status || echo "пакет не найден: ${QG_ROOT:-<QG_ROOT не задана>}"
 ```
 
 Затем кратко перескажи результат: взведён ли гейт, сколько файлов в охвате, какого они рода

@@ -8,6 +8,14 @@
  *     модель увидела взвод немедленно, а не при попытке завершить работу.
  *   - "event: session.idle" — возврат агента к работе, пока гейт не снят
  *     (аналог Stop-хука).
+ *   - "config" — регистрация состава пакета в живой конфигурации: каталог навыков,
+ *     команды, субагенты, MCP-сервер стандартов. Пакет лежит в кэше OpenCode, куда
+ *     сканирование проектных каталогов не достаёт, поэтому состав объявляется кодом,
+ *     а не раскладывается по проекту установочным скриптом.
+ *   - "shell.env" — QG_ROOT, QG_PROJECT_DIR и QG_STATE_DIR в окружение КАЖДОГО запуска
+ *     оболочки. Это несущая часть: инструменты пакета запускает агент из оболочки, и
+ *     без этих переменных он ищет пакет угадыванием, а состояние — по умолчанию
+ *     Claude Code. Тогда взвод шёл бы в один каталог, а снятие в другой.
  *
  * ВАЖНОЕ ОТЛИЧИЕ ОТ ХУКОВ CLAUDE CODE. В Claude Code Stop-хук жёстко отказывает
  * в завершении сессии (exit 2). У OpenCode такого механизма нет: плагин не может
@@ -29,6 +37,14 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { agentsFrom, commandsFrom } from './registry.js';
+
+/**
+ * MCP-сервер стандартов. Зависимость обязательная, а не удобство: без подтверждённого
+ * часового источника стандартов гейт не снимается. Регистрируется, только если у
+ * пользователя нет своей записи с этим именем.
+ */
+const V8STD_MCP = { type: 'remote', url: 'https://ai.v8std.ru/mcp', enabled: true };
 
 /** Максимум автоматических возвратов на неизменный состав правок. */
 const MAX_REPROMPTS = 3;
@@ -39,9 +55,10 @@ const JOURNAL_KEEP = 500;
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Корень пакета: из установленной раскладки install-opencode.sh плагин лежит в
- * <корень>/opencode/plugin/, значит пакет — два уровня вверх; из раскладки
- * «плагин рядом с пакетом» — ../1c-quality-gate. Проверяем по hooks/gate-core.mjs.
+ * Корень пакета. При штатной установке OpenCode пакет разворачивается целиком, плагин
+ * лежит в <корень>/opencode/plugin/ — значит корень двумя уровнями выше. Второй кандидат
+ * оставлен для раскладки «плагин положили рядом с распакованным пакетом» и стоит первым:
+ * если она есть, она задана человеком осознанно. Опознаём по hooks/gate-core.mjs.
  */
 function resolvePackageRoot() {
   for (const candidate of [
@@ -64,18 +81,12 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
   // Корень проекта: рабочее дерево точнее (git worktree), иначе каталог запуска.
   const root = worktree || directory || process.cwd();
 
-  // Дочерние процессы (bash-инструмент агента) наследуют окружение процесса OpenCode:
-  // инструменты пакета (gate.mjs, config.mjs, …) резолвят корень по QG_PROJECT_DIR даже
-  // при запуске из подкаталога — тот же смысл, что у CLAUDE_PROJECT_DIR в исходнике.
-  if (!process.env.QG_PROJECT_DIR) process.env.QG_PROJECT_DIR = root;
-
-  // Состояние гейта OpenCode хранит отдельно от Claude Code: .opencode/.state
-  // вместо .claude/.state. Инструменты пакета читают QG_STATE_DIR (tools/state-dir.mjs).
-  if (!process.env.QG_STATE_DIR) process.env.QG_STATE_DIR = '.opencode/.state';
-  // Одно значение на весь плагин: иначе при пользовательском QG_STATE_DIR взвод шёл бы
-  // в .opencode/.state, а снятие через gate.mjs из оболочки — в каталог пользователя,
-  // и гейт не снимался бы никогда.
-  const stateEnv = { QG_STATE_DIR: process.env.QG_STATE_DIR };
+  // Каталог состояния: OpenCode держит его отдельно от Claude Code — .opencode/.state
+  // вместо .claude/.state (tools/state-dir.mjs). Значение вычисляется ОДИН раз и отсюда
+  // же уходит в оболочку агента хуком shell.env. Разойтись эти два пути не должны:
+  // взвод пошёл бы в один каталог, а снятие через gate.mjs — в другой, и гейт не
+  // снимался бы никогда. Значение пользователя уважается, если он задал его сам.
+  const stateEnv = { QG_STATE_DIR: process.env.QG_STATE_DIR || '.opencode/.state' };
 
   // Корень пакета и ядро механики гейта. Если импорт не удался (пакет установлен
   // частично), плагин молчит — ложный гейт хуже отсутствующего.
@@ -138,6 +149,50 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
   };
 
   return {
+    /**
+     * Состав пакета — в живую конфигурацию. Пользовательские записи не перекрываются:
+     * своё имя команды, субагента или MCP-сервера всегда сильнее нашего.
+     */
+    config: async (cfg) => {
+      try {
+        cfg.skills = cfg.skills || {};
+        cfg.skills.paths = Array.isArray(cfg.skills.paths) ? cfg.skills.paths : [];
+        const skillsDir = join(packageRoot, 'skills');
+        if (!cfg.skills.paths.includes(skillsDir)) cfg.skills.paths.push(skillsDir);
+
+        cfg.command = cfg.command || {};
+        for (const [name, def] of commandsFrom(join(packageRoot, 'opencode', 'commands'))) {
+          if (cfg.command[name] === undefined) cfg.command[name] = def;
+        }
+
+        cfg.agent = cfg.agent || {};
+        for (const [name, def] of agentsFrom(join(packageRoot, 'opencode', 'agents'))) {
+          if (cfg.agent[name] === undefined) cfg.agent[name] = def;
+        }
+
+        cfg.mcp = cfg.mcp || {};
+        if (cfg.mcp.v8std === undefined) cfg.mcp.v8std = { ...V8STD_MCP };
+      } catch {
+        /* неполная регистрация лучше сломанной конфигурации */
+      }
+    },
+
+    /**
+     * Окружение оболочки. Инструменты пакета запускает агент, а не плагин, поэтому
+     * корень пакета, корень проекта и каталог состояния он обязан получить готовыми.
+     * Уже заданное значение не перекрываем: осознанная переменная пользователя сильнее.
+     */
+    'shell.env': async (_input, output) => {
+      try {
+        if (!output || typeof output.env !== 'object' || output.env === null) return;
+        if (!output.env.QG_ROOT) output.env.QG_ROOT = packageRoot;
+        if (!output.env.QG_PROJECT_DIR) output.env.QG_PROJECT_DIR = root;
+        if (!output.env.QG_STATE_DIR) output.env.QG_STATE_DIR = stateEnv.QG_STATE_DIR;
+      } catch {
+        /* окружение не обязано ломать запуск оболочки */
+      }
+    },
+
     'tool.execute.before': async (input, output) => {
       try {
         const file = fileOfArgs(output?.args);

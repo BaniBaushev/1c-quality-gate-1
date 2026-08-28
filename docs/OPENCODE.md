@@ -8,28 +8,42 @@ skill `skills/quality-gate`. Различаются способ взвода, �
 
 ## Установка
 
-```bash
-git clone https://github.com/Romandredan/1c-quality-gate.git
-cd 1c-quality-gate
-./install-opencode.sh /путь/к/проекту
+Одна строка в `opencode.json` проекта (или в `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["1c-quality-gate@git+https://github.com/Romandredan/1c-quality-gate.git#v3.0.0"]
+}
 ```
 
-Скрипт раскладывает пакет в проект:
+Перезапустите OpenCode — пакет установится сам и попадёт в кэш
+`~/.cache/opencode/packages/`. Проверка: `/gate-status` отвечает «Гейт не взведён».
 
-```text
-.opencode/plugin/quality-gate.js   — плагин OpenCode
-.opencode/plugin/package.json      — type: module (ESM-плагин под Node 20)
-.opencode/skills/                  — все пять навыков контура (quality-gate,
-                                     bsl-code-review, bsl-architecture-review,
-                                     xml-structure-review, file-hygiene) и shared/
-.opencode/commands/                — команды /gate и /gate-status
-.opencode/agents/                  — субагенты контуров (mode: subagent)
-.opencode/1c-quality-gate/         — механика: hooks/, tools/, assets/, docs/
-opencode.json                      — MCP v8std (создаётся из «opencode.json.example»
-                                     в каталоге opencode/, если файла не было)
+**Тег закрепляйте.** Без `#v3.0.0` установка тянет текущее состояние ветки `main`, а не
+выпущенную версию, и два харнесса разъезжаются: Claude Code ставится по тому же тегу через
+`marketplace.json`. Обновление — смена тега в этой строке и перезапуск. Если новая версия
+не подхватилась, очистите кэш пакета: Bun кэширует установленное по спецификации.
+
+Копировать в проект нечего: состав объявляется самим плагином в живой конфигурации
+(хук `config`), а инструменты находит агент по переменной `QG_ROOT` (хук `shell.env`).
+
+| Что регистрируется | Как |
+|---|---|
+| пять навыков контура и `shared/` | `config.skills.paths` — каталог `skills/` внутри пакета |
+| команды `/gate`, `/gate-status` | `config.command`, тело файла становится `template` |
+| субагенты `bsl-verifier`, `bsl-scout`, `xml-runner` | `config.agent`, тело файла становится `prompt` |
+| MCP-сервер стандартов `v8std` | `config.mcp` |
+
+Своё имя всегда сильнее: запись пользователя с тем же именем плагин не перекрывает.
+
+**Единственный ручной шаг** — рабочее состояние сессий не коммитить. Добавьте в
+`.gitignore` проекта:
+
+```gitignore
+.opencode/.state/
+.qg-analyzer/
 ```
-
-После установки перезапустите OpenCode. Проверка: `/gate-status` отвечает «Гейт не взведён».
 
 ## Отличия от Claude Code
 
@@ -39,7 +53,8 @@ opencode.json                      — MCP v8std (создаётся из «open
 | Подсказка о взводе | `additionalContext` хука | дописывается в результат инструмента |
 | Контроль завершения | Stop-хук отказывает в завершении (exit 2) — **жёсткий гейт** | `session.idle`: плагин отправляет агенту сообщение и возвращает его к работе — **мягкий гейт** |
 | Состояние | `.claude/.state/` | `.opencode/.state/` (через `QG_STATE_DIR`) |
-| Корень проекта | `CLAUDE_PROJECT_DIR` | `QG_PROJECT_DIR` (выставляет плагин) |
+| Корень проекта | `CLAUDE_PROJECT_DIR` | `QG_PROJECT_DIR` из хука `shell.env` |
+| Путь к инструментам | разрешается перебором в навыке | `QG_ROOT` из хука `shell.env` |
 | Снятие гейта | `node "$QG/tools/gate.mjs" release …` | то же самое, без изменений |
 
 ## Почему гейт в OpenCode мягкий

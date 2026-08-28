@@ -175,13 +175,17 @@ BSL (2):
 /plugin install 1c-quality-gate
 ```
 
-**OpenCode:**
+**OpenCode** — строка в `opencode.json`:
 
-```bash
-git clone https://github.com/Romandredan/1c-quality-gate.git
-cd 1c-quality-gate
-./install-opencode.sh /путь/к/проекту
+```json
+{
+  "plugin": ["1c-quality-gate@git+https://github.com/Romandredan/1c-quality-gate.git#v3.0.0"]
+}
 ```
+
+Оба харнесса ставят один и тот же тег одного репозитория: Claude Code — через
+`marketplace.json`, OpenCode — через эту строку. Закрепляйте тег: без него OpenCode тянет
+текущее состояние `main`, и версии разъезжаются.
 
 После установки перезапустите сессию: навыки материализуются при старте. Проверка
 работоспособности: `/gate-status` отвечает «Гейт не взведён». Отличия поведения в OpenCode —
