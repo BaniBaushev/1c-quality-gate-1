@@ -19,6 +19,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { removeTreeSync } from '../tools/fs-safe.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -75,7 +76,7 @@ function writeBytes(name, content) {
   return p;
 }
 
-rmSync(WORK, { recursive: true, force: true });
+removeTreeSync(WORK);
 mkdirSync(WORK, { recursive: true });
 
 // ---------------------------------------------------------------------------
@@ -2463,6 +2464,18 @@ section('Чужая установка принимается, только ес
 
   const gone = await boot.adopt(fake, join(launcher, 'нет-такого'), { root: join(WORK, 'adopt-data-3') });
   check('отсутствующий источник — не исключение, а причина', gone.ok === false && gone.reason === 'source_missing', JSON.stringify(gone));
+  // Старый бинарник остался на месте: на Node 24.x/Windows это штатный исход rmSync на путях
+  // с не-ASCII символами. Здесь неудаляемость моделируется каталогом по пути файла — важен не
+  // способ, а поведение: renameSync поверх живого пути Windows отвергает, и без проверки
+  // вызывающий получил бы исключение вместо причины. Мусор после отказа тоже не остаётся.
+  const dataRoot4 = join(WORK, 'adopt-data-4');
+  rmSync(dataRoot4, { recursive: true, force: true });
+  mkdirSync(boot.binaryPath(fake, dataRoot4), { recursive: true });
+  const stale = await boot.adopt(fake, theirs, { root: dataRoot4 });
+  check('неудалённый старый бинарник — причина, а не исключение', stale.ok === false && stale.reason === 'stale_target', JSON.stringify(stale));
+  check('после отказа не остаётся ни временного файла, ни маркера',
+    !existsSync(`${boot.binaryPath(fake, dataRoot4)}.download`) && !existsSync(join(boot.installDir(fake, dataRoot4), '.ready')));
+
 
   // Дальше проверяется порядок разрешения, поэтому каталог данных подменяется на пустой:
   // иначе тест увидел бы установку той машины, на которой запущен, и означал бы разное в
@@ -3351,10 +3364,143 @@ section('Версия плагина в выводе инструментов');
 }
 
 // ---------------------------------------------------------------------------
+section('Классификация форматов 1С: EDT и выгрузка конфигуратора');
+
+{
+  // Гейт обязан взводиться на ВСЕХ рабочих раскладках исходников 1С, а не только на
+  // выгрузке вида src/<Имя>/Catalogs. До этой секции формат EDT (.mdo, .form,
+  // src/Catalogs без промежуточного сегмента) и выгрузка конфигуратора без src/
+  // проходили мимо classifyFile: правка метаданных не взводила гейт вовсе.
+  const proj = join(WORK, 'classify-proj');
+  rmSync(proj, { recursive: true, force: true });
+  const env = { CLAUDE_PROJECT_DIR: proj };
+
+  const arm = (path, sessionId) => {
+    try {
+      execFileSync(process.execPath, [join(ROOT, 'hooks', 'gate-arm.mjs')], {
+        input: JSON.stringify({ session_id: sessionId, cwd: proj, tool_input: { file_path: path } }),
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
+      });
+    } catch {
+      /* arm не падает; результат читается из маркера */
+    }
+    const pendingPath = join(proj, '.claude', '.state', 'qg-pending.json');
+    if (!existsSync(pendingPath)) return null;
+    const state = JSON.parse(readFileSync(pendingPath, 'utf8'));
+    const files = state.sessions?.[sessionId]?.files || {};
+    const entry = Object.entries(files).find(([k]) => path.replace(/\\/g, '/').endsWith(k));
+    return entry ? entry[1].kind : null;
+  };
+
+  // Формат EDT: метаданные и формы.
+  const mdo = join(proj, 'src', 'Catalogs', 'Валюты', 'Валюты.mdo');
+  mkdirSync(dirname(mdo), { recursive: true });
+  writeFileSync(mdo, '<mdclass/>', 'utf8');
+  check('EDT .mdo взводит гейт как metadata-xml', arm(mdo, 'EDT1') === 'metadata-xml');
+
+  const form = join(proj, 'src', 'Catalogs', 'Валюты', 'Forms', 'ФормаЭлемента', 'Form.form');
+  mkdirSync(dirname(form), { recursive: true });
+  writeFileSync(form, '<form/>', 'utf8');
+  check('EDT .form внутри src взводит гейт', arm(form, 'EDT2') === 'metadata-xml');
+
+  const strayForm = join(proj, 'templates', 'letter.form');
+  mkdirSync(dirname(strayForm), { recursive: true });
+  writeFileSync(strayForm, 'x', 'utf8');
+  check('.form вне src гейт не взводит', arm(strayForm, 'EDT3') === null);
+
+  // Раскладка src/Catalogs/… без промежуточного сегмента (EDT и репозитории
+  // с одной конфигурацией).
+  const srcXml = join(proj, 'src', 'Catalogs', 'Товары.xml');
+  writeFileSync(srcXml, '<x/>', 'utf8');
+  check('XML в src/Catalogs без сегмента взводит гейт', arm(srcXml, 'SRC1') === 'metadata-xml');
+
+  // Выгрузка конфигуратора без src: подтверждением служит Configuration.xml рядом.
+  const dump = join(proj, 'выгрузка');
+  mkdirSync(join(dump, 'Catalogs'), { recursive: true });
+  const dumpXml = join(dump, 'Catalogs', 'Товары.xml');
+  writeFileSync(dumpXml, '<x/>', 'utf8');
+  check('выгрузка без src и без Configuration.xml молчит', arm(dumpXml, 'DUMP1') === null);
+  writeFileSync(join(dump, 'Configuration.xml'), '<x/>', 'utf8');
+  check('выгрузка без src при Configuration.xml рядом взводит гейт', arm(dumpXml, 'DUMP2') === 'metadata-xml');
+
+  // Чужой проект: типовое имя каталога само по себе гейт не взводит.
+  const alien = join(proj, 'backend', 'documents', 'invoice.xml');
+  mkdirSync(dirname(alien), { recursive: true });
+  writeFileSync(alien, '<x/>', 'utf8');
+  check('чужой documents/ без Configuration.xml молчит', arm(alien, 'ALIEN1') === null);
+
+  const alienSrc = join(proj, 'app', 'src', 'main', 'resources', 'beans.xml');
+  mkdirSync(dirname(alienSrc), { recursive: true });
+  writeFileSync(alienSrc, '<x/>', 'utf8');
+  check('java-style src/main/resources молчит', arm(alienSrc, 'ALIEN2') === null);
+
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+section('Удаление состояния на путях с не-ASCII символами');
+
+{
+  // На Node 24.x/Windows `fs.rmSync` молча не удаляет пути с не-ASCII символами
+  // (nodejs/node#56049): release печатал «гейт снят», маркер оставался, Stop блокировал
+  // завершение навсегда. Кириллическое имя проекта для 1С — норма, поэтому здесь
+  // фиксируется КОНТРАКТ: после удаления пути не существует — на любой версии Node.
+  const fsSafe = await import(pathToFileURL(join(ROOT, 'tools', 'fs-safe.mjs')).href);
+
+  const cyrDir = join(WORK, 'проект-кириллица');
+  fsSafe.removeTreeSync(cyrDir);
+  mkdirSync(join(cyrDir, '.claude', '.state'), { recursive: true });
+  const marker = join(cyrDir, '.claude', '.state', 'qg-pending.json');
+  writeFileSync(marker, '{}', 'utf8');
+  check('removeFileSync удаляет файл на кириллическом пути', fsSafe.removeFileSync(marker) === true && !existsSync(marker));
+  check('removeFileSync отсутствующего файла — успех', fsSafe.removeFileSync(marker) === true);
+
+  writeFileSync(join(cyrDir, 'вложенный файл.txt'), 'x', 'utf8');
+  check('removeTreeSync удаляет дерево с кириллицей внутри', fsSafe.removeTreeSync(cyrDir) === true && !existsSync(cyrDir));
+
+  // Интеграция: полный цикл взвода и снятия в проекте с кириллическим именем.
+  // Без removeFileSync в release этот тест на Node 24.x/Windows падал: маркер переживал
+  // «успешное» снятие, а повторный Stop возвращал блокировку.
+  const proj = join(WORK, 'проект-релиз');
+  fsSafe.removeTreeSync(proj);
+  mkdirSync(join(proj, 'src', 'cf', 'CommonModules', 'М', 'Ext'), { recursive: true });
+  const env = { CLAUDE_PROJECT_DIR: proj };
+  const file = join(proj, 'src', 'cf', 'CommonModules', 'М', 'Ext', 'Module.bsl');
+  try {
+    execFileSync(process.execPath, [join(ROOT, 'hooks', 'gate-arm.mjs')], {
+      input: JSON.stringify({ session_id: 'КИР', cwd: proj, tool_input: { file_path: file } }),
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+  } catch {
+    /* arm никогда не падает — а если упал, ниже это видно по отсутствию маркера */
+  }
+  const pendingPath = join(proj, '.claude', '.state', 'qg-pending.json');
+  check('гейт взведён в кириллическом проекте', existsSync(pendingPath));
+  const rel = run('tools/gate.mjs', ['release', '--session', 'КИР', '--class', 'C0', '--reason', 'тест контракта удаления'], { env });
+  check('release в кириллическом проекте снял гейт и подтвердил это', rel.code === 0 && !existsSync(pendingPath), `code=${rel.code}, pending=${existsSync(pendingPath)}`);
+  check('журнал снятий записан', existsSync(join(proj, '.claude', '.state', 'qg-done.json')));
+  let stopCode = 0;
+  try {
+    execFileSync(process.execPath, [join(ROOT, 'hooks', 'gate-check.mjs')], {
+      input: JSON.stringify({ session_id: 'КИР', cwd: proj }),
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    stopCode = e.status ?? 1;
+  }
+  check('Stop после снятия не блокирует', stopCode === 0, `code=${stopCode}`);
+  fsSafe.removeTreeSync(proj);
+}
+
+// ---------------------------------------------------------------------------
 process.stdout.write(`\n${'='.repeat(60)}\nПройдено: ${passed}, провалено: ${failures.length}\n`);
 if (failures.length) {
   process.stdout.write('\nПровалившиеся проверки:\n');
   for (const f of failures) process.stdout.write(`  - ${f.name}${f.detail ? ` (${f.detail})` : ''}\n`);
 }
-rmSync(WORK, { recursive: true, force: true });
+removeTreeSync(WORK);
 process.exit(failures.length ? 1 : 0);
