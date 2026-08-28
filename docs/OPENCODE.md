@@ -32,7 +32,7 @@ skill `skills/quality-gate`. Различаются способ взвода, �
 |---|---|
 | пять навыков контура и `shared/` | `config.skills.paths` — каталог `skills/` внутри пакета |
 | команды `/gate`, `/gate-status` | `config.command`, тело файла становится `template` |
-| субагенты `bsl-verifier`, `bsl-scout`, `xml-runner` | `config.agent`, тело файла становится `prompt` |
+| субагенты `bsl-verifier`, `bsl-scout`, `xml-runner` | `config.agent` из общего каталога `agents/`, тело файла становится `prompt` |
 | MCP-сервер стандартов `v8std` | `config.mcp` |
 
 Своё имя всегда сильнее: запись пользователя с тем же именем плагин не перекрывает.

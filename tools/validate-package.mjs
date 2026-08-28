@@ -256,7 +256,7 @@ for (const f of skillFiles) {
 // Проверялись только навыки. Между тем субагент с испорченным frontmatter просто не
 // поднимается, а контуры трактуют «субагента нет в среде» как законную деградацию с записью
 // skipped: дефект пакета выглядит как штатное окружение пользователя и не расследуется.
-for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)) && !rel(p).startsWith('opencode/'))) {
+for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)))) {
   const text = readFileSync(f, 'utf8');
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) {
@@ -280,20 +280,11 @@ for (const f of files.filter((p) => /(^|\/)agents\/[^/]+\.md$/.test(rel(p)) && !
   }
 }
 
-// Субагенты OpenCode (opencode/agents/): другой харнесс, другие правила frontmatter.
-// Поле name у OpenCode необязательно (имя — из файла), зато обязателен mode: subagent —
-// без него файл описывает основного агента, а не субагента, и механика гейта его не поднимет.
-for (const f of files.filter((p) => /^opencode\/agents\/[^/]+\.md$/.test(rel(p)))) {
-  const text = readFileSync(f, 'utf8');
-  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) {
-    fail(rel(f), 'нет frontmatter');
-    continue;
-  }
-  const fm = m[1];
-  if (!/^description:\s*\S/m.test(fm)) fail(rel(f), 'во frontmatter нет поля description');
-  if (!/^mode:\s*subagent\s*$/m.test(fm)) fail(rel(f), 'во frontmatter нет поля mode: subagent');
-  if (!/^tools:\s*\S/m.test(fm)) fail(rel(f), 'во frontmatter нет поля tools');
+// Отдельного каталога субагентов под OpenCode нет намеренно: те же файлы agents/ читает
+// плагин, переводя frontmatter в opencode/plugin/registry.js. Копия расходится с оригиналом
+// при первой правке одной из них, и расходится молча.
+if (existsSync(join(ROOT, 'opencode', 'agents'))) {
+  fail('opencode/agents/', 'копия субагентов: источник один — agents/, перевод в registry.js');
 }
 
 for (const f of files.filter((p) => /(^|\/)commands\/[^/]+\.md$/.test(rel(p)))) {

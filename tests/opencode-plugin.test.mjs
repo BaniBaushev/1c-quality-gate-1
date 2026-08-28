@@ -5,7 +5,7 @@
  * Запуск: node tests/opencode-plugin.test.mjs
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -169,6 +169,24 @@ check('ошибка клиента гасится', survived);
   check('config регистрирует команды', !!cfg.command?.gate?.template && !!cfg.command?.['gate-status']?.template);
   check('config регистрирует субагентов', ['bsl-verifier', 'bsl-scout', 'xml-runner'].every((n) => !!cfg.agent?.[n]?.prompt));
   check('субагент едет с картой инструментов и режимом', cfg.agent?.['bsl-verifier']?.mode === 'subagent' && cfg.agent?.['bsl-verifier']?.tools?.bash === true);
+
+  // Источник субагентов один — agents/. Файл, который разбор не признал, молча не
+  // зарегистрируется, и контур примет это за законное отсутствие субагента в среде.
+  // Поэтому сверяем состав каталога, а не фиксированный список имён.
+  const agentsDir = join(import.meta.dirname, '..', 'agents');
+  const onDisk = readdirSync(agentsDir).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, ''));
+  check('каждый файл agents/ доехал до конфигурации', onDisk.length > 0 && onDisk.every((n) => !!cfg.agent?.[n]?.prompt));
+  check('второго каталога субагентов нет', !existsSync(join(import.meta.dirname, '..', 'opencode', 'agents')));
+
+  // Перевод frontmatter: у харнессов разные схемы. Ключи Claude Code не переносятся —
+  // model: haiku в OpenCode не разрешается, color: cyan не проходит проверку формата.
+  const scout = cfg.agent?.['bsl-scout'];
+  check('перевод: список инструментов стал картой булевых',
+    scout?.tools?.skill === true && scout?.tools?.read === true && scout?.tools?.bash === false);
+  check('перевод: неразрешённая правка закрыта и картой, и разрешением',
+    scout?.tools?.write === false && scout?.tools?.edit === false && scout?.permission?.edit === 'deny');
+  check('перевод: ключи Claude Code не протекают в конфигурацию',
+    scout?.model === undefined && scout?.color === undefined && scout?.name === undefined);
   check('config регистрирует MCP стандартов', cfg.mcp?.v8std?.type === 'remote');
 
   // Повторный вызов не должен дублировать путь: конфигурация читается не один раз.

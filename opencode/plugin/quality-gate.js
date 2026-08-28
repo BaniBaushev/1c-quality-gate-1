@@ -165,8 +165,10 @@ export const QualityGatePlugin = async ({ project, client, directory, worktree }
           if (cfg.command[name] === undefined) cfg.command[name] = def;
         }
 
+        // Субагенты читаются из общего каталога agents/ — того же, что у Claude Code.
+        // Отдельной копии под OpenCode нет: frontmatter переводится в registry.js.
         cfg.agent = cfg.agent || {};
-        for (const [name, def] of agentsFrom(join(packageRoot, 'opencode', 'agents'))) {
+        for (const [name, def] of agentsFrom(join(packageRoot, 'agents'))) {
           if (cfg.agent[name] === undefined) cfg.agent[name] = def;
         }
 

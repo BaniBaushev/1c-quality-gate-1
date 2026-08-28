@@ -45,7 +45,10 @@ export function parseFrontmatter(text) {
   let i = 1;
   while (i < end) {
     const line = lines[i];
-    if (!line.trim()) {
+    if (!line.trim() || line.trimStart().startsWith('#')) {
+      // Пустая строка и комментарий. Комментарии в frontmatter несут причину выбора —
+      // почему субагенту дан именно этот набор инструментов, — и их отбрасывание
+      // обрушило бы разбор всего файла.
       i += 1;
       continue;
     }
@@ -122,16 +125,54 @@ export function commandsFrom(dir) {
 }
 
 /**
+ * Соответствие имён инструментов: слева — как их называет Claude Code в поле `tools`
+ * субагента, справа — ключ карты инструментов OpenCode. `ToolSearch` эквивалента не имеет:
+ * в OpenCode инструменты MCP доступны по имени сервера, догружать нечего.
+ */
+const TOOL_NAMES = {
+  skill: 'skill',
+  read: 'read',
+  grep: 'grep',
+  glob: 'glob',
+  bash: 'bash',
+  write: 'write',
+  edit: 'edit',
+};
+
+/** Карта выдаётся целиком: неупомянутый инструмент в OpenCode остаётся разрешённым. */
+const TOOL_KEYS = ['skill', 'read', 'grep', 'glob', 'bash', 'write', 'edit'];
+
+/**
  * Субагенты пакета в форме `config.agent`: тело файла становится `prompt`.
+ *
+ * Источник один — `agents/` в корне пакета, те же файлы, что читает Claude Code. Второй
+ * копии под OpenCode нет намеренно: копии расходятся при первой правке одной из них, и
+ * расходятся молча. Frontmatter переводится здесь, потому что схемы у харнессов разные:
+ * у Claude Code `tools` — перечисление через запятую, у OpenCode — карта булевых.
+ *
+ * Ключи, специфичные для Claude Code, не переносятся: `model: haiku` в OpenCode не
+ * разрешается (там имя модели идёт с префиксом провайдера), `color: cyan` не проходит
+ * проверку формата (ожидается шестнадцатеричный код). Оба ключа тише пропустить, чем
+ * отдать конфигурации значение, которого она не поймёт.
  */
 export function agentsFrom(dir) {
   return entries(dir)
     .filter(([, p]) => p.body)
     .map(([name, p]) => {
-      const def = { prompt: p.body };
-      for (const k of ['description', 'mode', 'model', 'temperature', 'tools', 'permission', 'disable']) {
-        if (p.data[k] !== undefined) def[k] = p.data[k];
-      }
+      const granted = new Set(
+        String(p.data.tools || '')
+          .split(',')
+          .map((t) => TOOL_NAMES[t.trim().toLowerCase()])
+          .filter(Boolean)
+      );
+      const tools = {};
+      for (const k of TOOL_KEYS) tools[k] = granted.has(k);
+
+      const def = { mode: 'subagent', prompt: p.body, tools };
+      if (p.data.description !== undefined) def.description = p.data.description;
+      // Право на правку — отдельный контур: карта инструментов и разрешение проверяются
+      // независимо, и субагент-читатель обязан быть закрыт в обоих.
+      if (!tools.edit && !tools.write) def.permission = { edit: 'deny' };
       return [name, def];
     });
 }
