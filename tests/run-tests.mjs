@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync
 import { removeTreeSync } from '../tools/fs-safe.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -3494,6 +3494,21 @@ section('Удаление состояния на путях с не-ASCII си�
   }
   check('Stop после снятия не блокирует', stopCode === 0, `code=${stopCode}`);
   fsSafe.removeTreeSync(proj);
+}
+
+// ---------------------------------------------------------------------------
+// Изолированные наборы тестов — отдельными процессами: у них собственные счётчики
+// и временные каталоги, а их падение обязано быть видно в общем итоге CI.
+for (const suite of ['tests/gate-core.test.mjs', 'tests/opencode-plugin.test.mjs']) {
+  const res = spawnSync(process.execPath, [join(ROOT, ...suite.split('/'))], {
+    encoding: 'utf8',
+    env: { ...process.env },
+  });
+  check(
+    `${suite} — весь набор зелёный`,
+    res.status === 0,
+    res.status === 0 ? '' : (res.stdout || '') + (res.stderr || '')
+  );
 }
 
 // ---------------------------------------------------------------------------
