@@ -2505,6 +2505,40 @@ section('Чужая установка принимается, только ес
 }
 
 // ---------------------------------------------------------------------------
+section('Каталог данных анализатора общий для двух харнессов');
+
+{
+  // Бинарник закреплён по версии и SHA-256 — для Claude Code и OpenCode он один и тот же.
+  // Умолчание общее намеренно: свой каталог на харнесс означал бы вторую копию на шестьдесят
+  // мегабайт у того, кто работает в обоих. QG_DATA_DIR — явный обход для тех, кому каталог
+  // чужого харнесса не нужен; плагин OpenCode её не выставляет.
+  const boot = await import(pathToFileURL(join(ROOT, 'tools', 'analyzer-bootstrap.mjs')).href);
+  const savedQg = process.env.QG_DATA_DIR;
+  const savedClaude = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    delete process.env.QG_DATA_DIR;
+    delete process.env.CLAUDE_PLUGIN_DATA;
+    const fallback = boot.dataRoot();
+    check('без переменных — общий путь, а не путь харнесса',
+      fallback.includes('.claude') && fallback.includes('plugins'), fallback);
+
+    process.env.CLAUDE_PLUGIN_DATA = join(WORK, 'данные-claude');
+    check('CLAUDE_PLUGIN_DATA действует', boot.dataRoot() === join(WORK, 'данные-claude'));
+
+    process.env.QG_DATA_DIR = join(WORK, 'данные-обход');
+    check('QG_DATA_DIR сильнее CLAUDE_PLUGIN_DATA', boot.dataRoot() === join(WORK, 'данные-обход'));
+
+    delete process.env.CLAUDE_PLUGIN_DATA;
+    check('QG_DATA_DIR действует и в одиночку', boot.dataRoot() === join(WORK, 'данные-обход'));
+  } finally {
+    if (savedQg === undefined) delete process.env.QG_DATA_DIR;
+    else process.env.QG_DATA_DIR = savedQg;
+    if (savedClaude === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedClaude;
+  }
+}
+
+// ---------------------------------------------------------------------------
 section('Часовой проверяется по целям, а не «хотя бы один живой»');
 
 {
