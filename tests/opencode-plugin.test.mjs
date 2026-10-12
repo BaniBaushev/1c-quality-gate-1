@@ -8,6 +8,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const PLUGIN_URL = pathToFileURL(join(import.meta.dirname, '..', 'opencode', 'plugin', 'quality-gate.js')).href;
@@ -229,6 +230,18 @@ check('ошибка клиента гасится', survived);
 }
 
 rmSync(root, { recursive: true, force: true });
+
+// Набор V2 — отдельным процессом: собственные моки и счётчики, а его падение
+// обязано краснить общий прогон. run-tests.mjs не правим: набор входит сюда.
+{
+  const res = spawnSync(process.execPath, [join(import.meta.dirname, 'opencode-plugin-v2.test.mjs')], {
+    encoding: 'utf8',
+    env: { ...process.env },
+  });
+  if (res.stdout) process.stdout.write(res.stdout);
+  if (res.stderr) process.stderr.write(res.stderr);
+  check('tests/opencode-plugin-v2.test.mjs — весь набор зелёный', res.status === 0);
+}
 
 console.log(`\n${passed} пройдено, ${failed} провалено`);
 process.exit(failed ? 1 : 0);
