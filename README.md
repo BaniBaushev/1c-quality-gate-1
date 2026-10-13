@@ -179,11 +179,12 @@ BSL (2):
 /plugin install 1c-quality-gate
 ```
 
-**OpenCode** — строка в `opencode.json`:
+**OpenCode** — строка в `opencode.json` (поле `plugins` в OpenCode 2.x; в 1.x
+начиная с 1.18.29 — `plugin`):
 
 ```json
 {
-  "plugin": ["1c-quality-gate@git+https://github.com/Romandredan/1c-quality-gate.git#v3.17.0"]
+  "plugins": ["1c-quality-gate@git+https://github.com/Romandredan/1c-quality-gate.git#v3.17.0"]
 }
 ```
 
