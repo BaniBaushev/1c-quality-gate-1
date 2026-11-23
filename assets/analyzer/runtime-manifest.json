@@ -1,24 +1,24 @@
 {
   "_comment": "Закреплённая версия анализатора и контрольные суммы его бинарников. Плагин скачивает файл с релизов автора (не зеркалит) и проверяет SHA-256 до того, как запустить. Обновление версии: `node tools/runtime-bump.mjs --engine analyzer --apply`; суммы и размеры берутся из GitHub API релиза (поле digest у каждого asset).",
   "engine": "bsl-analyzer",
-  "version": "0.2.85",
+  "version": "0.4.7",
   "repo": "itrous/bsl-analyzer",
   "urlTemplate": "https://github.com/{repo}/releases/download/v{version}/{asset}",
   "targets": {
     "win32-x64": {
       "asset": "bsl-analyzer-app-windows-amd64.exe",
-      "sha256": "5afe8a2bdfce77fa1ed998c83a417f403c48908cf141eac48954103e87d5b2f4",
-      "size": 72362496
+      "sha256": "15487b174cb13e334f3daffeeabbdaa3fe4e74735eecafb6f26ed294a36b3b95",
+      "size": 81305088
     },
     "linux-x64": {
       "asset": "bsl-analyzer-app-linux-amd64",
-      "sha256": "3773e2a1ba4f92ccfe1fa1c0546094bcc5a9467393ff99839c06d4b2bdc93c29",
-      "size": 77603040
+      "sha256": "6c507ea9fc10b56302d16556c6d4001e759d924dd647d5f30681d0d31f30607e",
+      "size": 80160440
     },
     "darwin-arm64": {
       "asset": "bsl-analyzer-app-darwin-arm64",
-      "sha256": "034a4f9cabd67bb5574c7fe6b86debbedc6707ff900485f2a7087e435e4872fd",
-      "size": 60503680
+      "sha256": "f5e3edf911d33afc83df0c161655a9fe0546ab8f6eb905ec476a0d174b1ef158",
+      "size": 66271424
     }
   }
 }
